@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "rag-mcp"
+version = "0.1.0"
+description = "RAG-MCP"
+authors = ["lukeding <dingkai9627@outlook.com>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.104.1"
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
+aiosqlite = "^0.19.0"
+python-multipart = "^0.0.6"
+aiofiles = "^23.2.1"
+httpx = "^0.25.0"
+python-docx = "^1.2.0"
+pypdf2 = "^3.0.1"
+python-magic = "^0.4.27"
+python-dotenv = "^1.1.1"
+openai = "^2.3.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
