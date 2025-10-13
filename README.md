@@ -1,70 +1,116 @@
-# RAG-MCP
+# RAG-MCP 文档向量化服务
 
-A small FastAPI service to upload documents, extract text, call an online embedding model, and store document chunks and embeddings in a local SQLite database.
+基于 FastAPI 的文档上传、文本提取和向量化服务，支持调用在线 embedding 模型并将文档块和向量存储到本地 SQLite 数据库。
 
-This repo provides:
+## 项目功能
 
-- HTTP endpoints for uploading files and triggering vectorization (`/api/v1/upload`, `/api/v1/vectorize`).
-- Document parsing for `.docx`, `.pdf`, `.txt`/`.md`.
-- An embedding flow using an OpenAI-compatible client (configured by environment variables).
+- 🔥 **文件上传**：支持上传 `.docx`、`.pdf`、`.txt`、`.md` 格式的文档
+- 📄 **文档解析**：自动提取文档中的文本内容
+- 🧠 **智能向量化**：调用在线 embedding 模型生成文本向量
+- 💾 **数据存储**：将文档和向量数据存储到 SQLite 数据库
+- 🌐 **REST API**：提供完整的 RESTful API 接口
+- 📚 **自动文档**：集成 Swagger UI 交互式 API 文档
 
-## Requirements
+## 系统要求
 
-- Python 3.12 (project uses Poetry, see `pyproject.toml`).
-- The project depends on packages listed in `pyproject.toml` (FastAPI, uvicorn, python-docx, pypdf2, python-dotenv, openai client, etc.).
+- Python 3.12+
+- 依赖包详见 `pyproject.toml` (FastAPI, uvicorn, python-docx, pypdf2, python-dotenv, openai 等)
 
-## Setup
+## 快速开始
 
-1. Create and activate a Python environment (recommended: use Poetry):
+### 1. 安装依赖
+
+推荐使用 Poetry 管理依赖：
 
 ```bash
 poetry install
 poetry shell
 ```
 
-2. Create a `.env` file in the project root (the repository already includes a `.env` file in the workspace). Add the required environment variables (example below).
-3. Run the app locally with Uvicorn:
+或使用 pip：
 
 ```bash
-uvicorn main:app --reload --port 8000
+pip install -r requirements.txt
 ```
 
-Open http://localhost:8000/docs to see the interactive API docs.
+### 2. 配置环境变量
 
-## Required environment variables
-
-Add these to your `.env` file (example names used in the code):
+在项目根目录创建 `.env` 文件（项目已包含示例文件），配置以下环境变量：
 
 ```env
-# OpenAI-compatible client config
+# OpenAI 兼容的 API 配置
 OPENAI_API_KEY=sk-xxxx
-OPENAI_URL=https://api.openai.com/v1
+OPENAI_URL=https://api.siliconflow.cn/v1
 
-# Optional: model name to use for embeddings (defaults to Qwen/Qwen3-Embedding-8B)
+# 可选：embedding 模型名称（默认为 Qwen/Qwen3-Embedding-8B）
 MODEL_NAME=Qwen/Qwen3-Embedding-8B
 ```
 
-Depending on your OpenAI-compatible provider you may also need to set different base URL or API key names. The project reads `OPENAI_API_KEY`, `OPENAI_URL`, and `MODEL_NAME` in `api/vectorize.py`.
+### 3. 启动服务
 
-## Endpoints (high level)
+```bash
+python main.py
+```
 
-- POST /api/v1/upload — upload a document file. (See `api/upload.py`)
-- POST /api/v1/vectorize — accepts a `file_path` (e.g. `upload/your-file.docx`) and will:
-  - read and parse the file into text (supports `.docx`, `.pdf`, `.txt`, `.md`),
-  - chunk the text into blocks,
-  - call the configured embedding model for each chunk,
-  - store the document record and chunk embeddings in the database.
+或使用 uvicorn：
 
-Example request to vectorize (from code / API docs):
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 4. 访问 API 文档
+
+打开浏览器访问：http://localhost:8000/docs 查看交互式 API 文档
+
+## API 接口说明
+
+### 文件上传接口
+
+**POST** `/api/v1/files` - 上传文档文件
+
+支持的文件格式：
+
+- `.docx` - Word 文档
+- `.pdf` - PDF 文档
+- `.txt` - 纯文本文件
+- `.md` - Markdown 文档
+
+**请求示例：**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/files" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@document.docx"
+```
+
+**响应示例：**
 
 ```json
-POST /api/v1/vectorize
 {
-	"file_path": "upload/b9cbbc03-6608-4b17-95e5-281a5a8f4e83.docx"
+  "code": 200,
+  "msg": "文件上传成功",
+  "data": {
+    "file_id": "b9cbbc03-6608-4b17-95e5-281a5a8f4e83",
+    "original_name": "document.docx",
+    "file_size": 12345,
+    "file_type": ".docx"
+  }
 }
 ```
 
-Response sample:
+### 文件向量化接口
+
+**POST** `/api/v1/vectorize` - 向量化已上传的文件
+
+**请求示例：**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/vectorize" \
+  -H "Content-Type: application/json" \
+  -d '{"file_path": "upload/b9cbbc03-6608-4b17-95e5-281a5a8f4e83.docx"}'
+```
+
+**响应示例：**
 
 ```json
 {
@@ -72,7 +118,7 @@ Response sample:
   "message": "文件向量化成功",
   "data": {
     "document_id": 1,
-    "filename": "b9cbbc03-6608-4b17-95e5-281a5a8f4e83.docx",
+    "filename": "document.docx",
     "file_path": "upload/b9cbbc03-6608-4b17-95e5-281a5a8f4e83.docx",
     "total_chunks": 10,
     "text_length": 12345,
@@ -81,19 +127,65 @@ Response sample:
 }
 ```
 
-## Database
+### 其他接口
 
-The project uses a local SQLite database (see `database/models.py`). On application startup the DB is initialized in `main.py` via the `db_manager.init_database()` call.
+- **GET** `/api/v1/files` - 获取所有文件列表
+- **GET** `/api/v1/files/{file_id}` - 获取指定文件信息
+- **DELETE** `/api/v1/files/{file_id}` - 删除指定文件
 
-## Troubleshooting
+## 数据库
 
-- If embeddings fail, check that `OPENAI_API_KEY` and `OPENAI_URL` are correct and reachable from your machine.
-- If file parsing fails for certain PDFs, try using a different PDF or check the file is not corrupted.
+项目使用 SQLite 作为本地数据库，存储以下数据：
 
-## Notes & next steps
+- **文件信息表**：存储上传文件的基本信息
+- **文档表**：存储解析后的文档数据
+- **文档块表**：存储分割后的文本块和对应的向量数据
 
-- Add support for more file types if needed.
-- Add batching to embedding calls to improve throughput for large documents.
-- Add tests for parsing, chunking and DB persistence.
+数据库在应用启动时自动初始化，相关代码见 `database/models.py`。
 
-If you want, I can add example curl commands for upload and vectorize, or add a small test script to call the API — tell me which you prefer.
+## 工作流程
+
+1. **文件上传**：通过 `/api/v1/files` 接口上传文档文件
+2. **文档解析**：系统自动识别文件类型并提取文本内容
+3. **文本分块**：将长文档分割成适合向量化的文本块
+4. **向量生成**：调用配置的 embedding 模型生成文本向量
+5. **数据存储**：将文档信息、文本块和向量数据存储到数据库
+
+## 故障排除
+
+### 向量化失败
+
+- 检查 `OPENAI_API_KEY` 和 `OPENAI_URL` 配置是否正确
+- 确认网络连接正常，可以访问 embedding 服务
+- 查看服务日志获取详细错误信息
+
+### 文件解析失败
+
+- 确认文件格式是否在支持列表中
+- 检查文件是否损坏或加密
+- 对于 PDF 文件，尝试使用其他 PDF 查看器确认文件完整性
+
+### 数据库相关问题
+
+- 确认项目目录有写入权限
+- 检查 SQLite 数据库文件是否正常创建
+- 重启服务以重新初始化数据库
+
+## 开发计划
+
+- [ ] 支持更多文件格式（如 .txt, .rtf 等）
+- [ ] 批量向量化处理优化
+- [ ] 添加文本相似度搜索功能
+- [ ] 支持自定义文本分块策略
+- [ ] 添加用户认证和权限管理
+- [ ] 完善单元测试和集成测试
+
+## 技术栈
+
+- **Web 框架**：FastAPI
+- **异步运行时**：Uvicorn
+- **数据库**：SQLite + aiosqlite
+- **文档处理**：python-docx, PyPDF2
+- **向量服务**：OpenAI 兼容 API
+- **环境管理**：python-dotenv
+- **依赖管理**：Poetry
