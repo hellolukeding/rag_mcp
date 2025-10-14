@@ -58,7 +58,7 @@ class DatabaseManager:
                     file_path TEXT NOT NULL,
                     file_type TEXT NOT NULL,
                     file_size INTEGER NOT NULL,
-                    vectorized BOOLEAN DEFAULT FALSE,
+                    vectorized TEXT DEFAULT 'pending',
                     vectorized_at TIMESTAMP NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -67,7 +67,7 @@ class DatabaseManager:
             # 为已存在的files表添加向量化字段（如果不存在的话）
             try:
                 await db.execute("""
-                    ALTER TABLE files ADD COLUMN vectorized BOOLEAN DEFAULT FALSE
+                    ALTER TABLE files ADD COLUMN vectorized TEXT DEFAULT 'pending'
                 """)
             except Exception:
                 # 字段已存在，忽略错误
@@ -79,6 +79,22 @@ class DatabaseManager:
                 """)
             except Exception:
                 # 字段已存在，忽略错误
+                pass
+
+            # 如果向量化字段已存在但是BOOLEAN类型，需要转换为TEXT类型
+            try:
+                # 检查现有数据并转换
+                await db.execute("""
+                    UPDATE files SET vectorized = 'completed' WHERE vectorized = '1' OR vectorized = 1 OR vectorized = 'TRUE'
+                """)
+                await db.execute("""
+                    UPDATE files SET vectorized = 'pending' WHERE vectorized = '0' OR vectorized = 0 OR vectorized = 'FALSE'
+                """)
+                await db.execute("""
+                    UPDATE files SET vectorized = 'pending' WHERE vectorized IS NULL
+                """)
+            except Exception:
+                # 如果转换失败，忽略错误
                 pass
             await db.commit()
 
@@ -302,7 +318,7 @@ class DatabaseManager:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("""
                 INSERT INTO files (file_id, original_name, file_name, file_path, file_type, file_size, vectorized)
-                VALUES (?, ?, ?, ?, ?, ?, FALSE)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending')
             """, (file_id, original_name, file_name, file_path, file_type, file_size))
             await db.commit()
             return cursor.lastrowid
@@ -324,7 +340,7 @@ class DatabaseManager:
                     "file_path": row["file_path"],
                     "file_type": row["file_type"],
                     "file_size": row["file_size"],
-                    "vectorized": bool(row["vectorized"]) if "vectorized" in row.keys() else False,
+                    "vectorized": row["vectorized"] if "vectorized" in row.keys() else "pending",
                     "vectorized_at": row["vectorized_at"] if "vectorized_at" in row.keys() else None,
                     "created_at": row["created_at"]
                 }
@@ -348,34 +364,40 @@ class DatabaseManager:
                     "file_path": row["file_path"],
                     "file_type": row["file_type"],
                     "file_size": row["file_size"],
-                    "vectorized": bool(row["vectorized"]) if "vectorized" in row.keys() else False,
+                    "vectorized": row["vectorized"] if "vectorized" in row.keys() else "pending",
                     "vectorized_at": row["vectorized_at"] if "vectorized_at" in row.keys() else None,
                     "created_at": row["created_at"]
                 })
             return files
 
-    async def update_file_vectorized_status(self, file_id: str, vectorized: bool) -> bool:
-        """更新文件向量化状态"""
+    async def update_file_vectorized_status(self, file_id: str, status: str) -> bool:
+        """
+        更新文件向量化状态
+
+        Args:
+            file_id: 文件ID
+            status: 向量化状态，支持: 'pending', 'processing', 'completed', 'failed'
+        """
         async with aiosqlite.connect(self.db_path) as db:
-            if vectorized:
+            if status == 'completed':
                 cursor = await db.execute("""
-                    UPDATE files SET vectorized = TRUE, vectorized_at = CURRENT_TIMESTAMP
+                    UPDATE files SET vectorized = ?, vectorized_at = CURRENT_TIMESTAMP
                     WHERE file_id = ?
-                """, (file_id,))
+                """, (status, file_id))
             else:
                 cursor = await db.execute("""
-                    UPDATE files SET vectorized = FALSE, vectorized_at = NULL
+                    UPDATE files SET vectorized = ?, vectorized_at = NULL
                     WHERE file_id = ?
-                """, (file_id,))
+                """, (status, file_id))
             await db.commit()
             return cursor.rowcount > 0
 
     async def get_unvectorized_files(self) -> List[dict]:
-        """获取未向量化的文件"""
+        """获取未向量化的文件（包括pending和failed状态）"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
-                SELECT * FROM files WHERE vectorized = FALSE OR vectorized IS NULL
+                SELECT * FROM files WHERE vectorized IN ('pending', 'failed') OR vectorized IS NULL
                 ORDER BY created_at ASC
             """)
             rows = await cursor.fetchall()

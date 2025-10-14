@@ -215,6 +215,10 @@ class VectorizeQueue:
             logger.info(
                 f"开始处理向量化任务: {task.task_id}, 文件: {task.task_file.original_name}")
 
+            # 0. 更新文件状态为处理中
+            asyncio.run(self._update_file_vectorized_status(
+                task.task_file.file_id, "processing"))
+
             # 1. 读取文件内容
             content = self._read_file_content(task.task_file)
 
@@ -228,9 +232,9 @@ class VectorizeQueue:
             # 3. 向量化处理
             asyncio.run(self._vectorize_chunks(task, chunks))
 
-            # 4. 更新文件向量化状态
+            # 4. 更新文件向量化状态为已完成
             asyncio.run(self._update_file_vectorized_status(
-                task.task_file.file_id, True))
+                task.task_file.file_id, "completed"))
 
             # 5. 更新任务完成状态
             task.status = TaskStatus.COMPLETED
@@ -241,10 +245,10 @@ class VectorizeQueue:
             logger.info(f"向量化任务完成: {task.task_id}")
 
         except Exception as e:
-            # 处理失败，确保文件状态为未向量化
+            # 处理失败，更新文件状态为失败
             try:
                 asyncio.run(self._update_file_vectorized_status(
-                    task.task_file.file_id, False))
+                    task.task_file.file_id, "failed"))
             except Exception as update_e:
                 logger.error(f"更新文件向量化状态失败: {update_e}")
 
@@ -344,14 +348,26 @@ class VectorizeQueue:
             logger.error(f"获取向量失败: {e}")
             raise
 
-    async def _update_file_vectorized_status(self, file_id: str, vectorized: bool):
-        """更新文件向量化状态"""
+    async def _update_file_vectorized_status(self, file_id: str, status: str):
+        """
+        更新文件向量化状态
+
+        Args:
+            file_id: 文件ID
+            status: 状态，支持: 'pending', 'processing', 'completed', 'failed'
+        """
         try:
             await self.db_manager.init_database()
-            success = await self.db_manager.update_file_vectorized_status(file_id, vectorized)
+            success = await self.db_manager.update_file_vectorized_status(file_id, status)
             if success:
-                status = "成功" if vectorized else "失败"
-                logger.info(f"文件 {file_id} 向量化状态更新为: {status}")
+                status_map = {
+                    'pending': '待处理',
+                    'processing': '处理中',
+                    'completed': '已完成',
+                    'failed': '失败'
+                }
+                logger.info(
+                    f"文件 {file_id} 向量化状态更新为: {status_map.get(status, status)}")
             else:
                 logger.warning(f"文件 {file_id} 向量化状态更新失败: 文件未找到")
         except Exception as e:

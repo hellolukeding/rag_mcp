@@ -79,10 +79,22 @@ class FileInfoResponse(BaseModel):
     file_type: str
     file_size: int
     created_at: str
-    vectorized: bool = False
+    vectorized_status: str = "pending"  # pending, processing, completed, failed
     vectorized_at: Optional[str] = None
 
 
 class FileListResponse(BaseModel):
     files: List[FileInfoResponse]
     total: int
+
+
+class FileContentResponse(BaseModel):
+    file_id: str
+    original_name: str
+    file_name: str
+    file_type: str
+    file_size: int
+    content: str
+    created_at: str
+    vectorized_status: str = "pending"  # pending, processing, completed, failed
+    vectorized_at: Optional[str] = None

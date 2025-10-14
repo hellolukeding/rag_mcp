@@ -7,8 +7,16 @@ import aiofiles
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
 
-from core.schemas import (ApiResponse, FileInfoResponse, FileListResponse,
-                          FileUploadResponse)
+# PDF和DOCX处理库
+try:
+    import PyPDF2
+    from docx import Document
+except ImportError:
+    PyPDF2 = None
+    Document = None
+
+from core.schemas import (ApiResponse, FileContentResponse, FileInfoResponse,
+                          FileListResponse, FileUploadResponse)
 from database.models import db_manager
 from utils.logger import logger
 
@@ -51,6 +59,77 @@ def validate_file_type(filename: str, content: bytes) -> bool:
             return False
 
     return True
+
+
+async def extract_file_content(file_path: Path, file_type: str) -> str:
+    """
+    根据文件类型提取文件内容
+
+    Args:
+        file_path: 文件路径
+        file_type: 文件类型（扩展名）
+
+    Returns:
+        提取的文本内容
+    """
+    try:
+        if file_type in [".md", ".markdown", ".txt"]:
+            # 处理文本文件
+            try:
+                async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+                    return await f.read()
+            except UnicodeDecodeError:
+                # 如果UTF-8解码失败，尝试其他编码
+                async with aiofiles.open(file_path, 'r', encoding='gbk') as f:
+                    return await f.read()
+
+        elif file_type == ".pdf":
+            # 处理PDF文件
+            if PyPDF2 is None:
+                return "PDF处理库未安装，无法读取PDF文件内容"
+
+            text_content = ""
+            try:
+                with open(file_path, 'rb') as f:
+                    pdf_reader = PyPDF2.PdfReader(f)
+
+                    # 检查PDF是否加密
+                    if pdf_reader.is_encrypted:
+                        return "PDF文件已加密，无法读取内容"
+
+                    for page_num in range(len(pdf_reader.pages)):
+                        page = pdf_reader.pages[page_num]
+                        page_text = page.extract_text()
+                        if page_text:
+                            text_content += page_text + "\n"
+
+                # 如果提取的内容为空或者包含太多特殊字符，可能是扫描版PDF
+                if not text_content.strip() or len([c for c in text_content if c.isprintable()]) < len(text_content) * 0.8:
+                    return "PDF文件可能是扫描版或格式不兼容，无法提取文本内容"
+
+                return text_content.strip()
+
+            except Exception as pdf_error:
+                logger.error(f"PDF处理错误: {pdf_error}")
+                return f"PDF文件读取失败: {str(pdf_error)}"
+
+        elif file_type == ".docx":
+            # 处理DOCX文件
+            if Document is None:
+                return "DOCX处理库未安装，无法读取DOCX文件内容"
+
+            doc = Document(file_path)
+            text_content = ""
+            for paragraph in doc.paragraphs:
+                text_content += paragraph.text + "\n"
+            return text_content.strip()
+
+        else:
+            return f"不支持的文件类型: {file_type}"
+
+    except Exception as e:
+        logger.error(f"提取文件内容失败: {e}")
+        return f"提取文件内容失败: {str(e)}"
 
 
 @router.post("/files", status_code=status.HTTP_201_CREATED)
@@ -119,9 +198,9 @@ async def upload_file(file: UploadFile = File(...)) -> ApiResponse[FileUploadRes
 
 
 @router.get("/files/{file_id}", status_code=status.HTTP_200_OK)
-async def get_file_info(file_id: str) -> ApiResponse[FileInfoResponse]:
+async def get_file_content(file_id: str) -> ApiResponse[FileContentResponse]:
     """
-    根据文件ID获取文件信息
+    根据文件ID获取文件内容
     """
     try:
         file_info = await db_manager.get_file_by_id(file_id)
@@ -132,24 +211,39 @@ async def get_file_info(file_id: str) -> ApiResponse[FileInfoResponse]:
                 data=None
             )
 
+        # 读取文件内容
+        file_path = Path(file_info["file_path"])
+        if not file_path.exists():
+            return ApiResponse(
+                code=404,
+                msg="物理文件不存在",
+                data=None
+            )
+
+        # 根据文件类型提取内容
+        content = await extract_file_content(file_path, file_info["file_type"])
+
         return ApiResponse(
             code=200,
-            msg="获取文件信息成功",
-            data=FileInfoResponse(
+            msg="获取文件内容成功",
+            data=FileContentResponse(
                 file_id=file_info["file_id"],
                 original_name=file_info["original_name"],
                 file_name=file_info["file_name"],
-                file_path=file_info["file_path"],
                 file_type=file_info["file_type"],
                 file_size=file_info["file_size"],
-                created_at=file_info["created_at"]
+                content=content,
+                created_at=str(file_info["created_at"]),
+                vectorized_status=file_info["vectorized"],
+                vectorized_at=str(
+                    file_info["vectorized_at"]) if file_info["vectorized_at"] else None
             )
         )
 
     except Exception as e:
         return ApiResponse(
             code=500,
-            msg=f"获取文件信息失败: {str(e)}",
+            msg=f"获取文件内容失败: {str(e)}",
             data=None
         )
 
@@ -221,7 +315,7 @@ async def list_files() -> ApiResponse[FileListResponse]:
                 file_type=file["file_type"],
                 file_size=file["file_size"],
                 created_at=file["created_at"],
-                vectorized=file.get("vectorized", False),
+                vectorized_status=file.get("vectorized", "pending"),
                 vectorized_at=file.get("vectorized_at")
             ) for file in files
         ]
