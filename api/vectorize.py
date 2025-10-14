@@ -72,7 +72,10 @@ async def create_vectorize_task(request: VectorizeTaskRequest):
             )
 
         # 检查文件是否已经向量化
-        if file_info.get("vectorized", False):
+        vectorized_status = file_info.get("vectorized", "pending")
+        logger.info(
+            f"文件 {request.file_id} 的向量化状态: {vectorized_status}, 类型: {type(vectorized_status)}")
+        if vectorized_status == "completed":
             return VectorizeTaskResponse(
                 success=True,
                 message="文件已经向量化完成",

@@ -262,12 +262,64 @@ class VectorizeQueue:
     def _read_file_content(self, task_file: TaskFile) -> str:
         """读取文件内容"""
         try:
-            with open(task_file.file_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        except UnicodeDecodeError:
-            # 尝试其他编码
-            with open(task_file.file_path, 'r', encoding='gbk') as f:
-                return f.read()
+            file_type = task_file.file_type.lower()
+
+            if file_type in [".md", ".markdown", ".txt"]:
+                # 处理文本文件
+                try:
+                    with open(task_file.file_path, 'r', encoding='utf-8') as f:
+                        return f.read()
+                except UnicodeDecodeError:
+                    # 如果UTF-8解码失败，尝试其他编码
+                    with open(task_file.file_path, 'r', encoding='gbk') as f:
+                        return f.read()
+
+            elif file_type == ".pdf":
+                # 处理PDF文件
+                try:
+                    import PyPDF2
+                    text_content = ""
+                    with open(task_file.file_path, 'rb') as f:
+                        pdf_reader = PyPDF2.PdfReader(f)
+
+                        # 检查PDF是否加密
+                        if pdf_reader.is_encrypted:
+                            raise Exception("PDF文件已加密，无法读取内容")
+
+                        for page_num in range(len(pdf_reader.pages)):
+                            page = pdf_reader.pages[page_num]
+                            page_text = page.extract_text()
+                            if page_text:
+                                text_content += page_text + "\n"
+
+                    # 如果提取的内容为空
+                    if not text_content.strip():
+                        raise Exception("PDF文件可能是扫描版或格式不兼容，无法提取文本内容")
+
+                    return text_content.strip()
+
+                except ImportError:
+                    raise Exception("PDF处理库未安装，无法读取PDF文件内容")
+
+            elif file_type == ".docx":
+                # 处理DOCX文件
+                try:
+                    from docx import Document
+                    doc = Document(task_file.file_path)
+                    text_content = ""
+                    for paragraph in doc.paragraphs:
+                        text_content += paragraph.text + "\n"
+                    return text_content.strip()
+
+                except ImportError:
+                    raise Exception("DOCX处理库未安装，无法读取DOCX文件内容")
+
+            else:
+                raise Exception(f"不支持的文件类型: {file_type}")
+
+        except Exception as e:
+            logger.error(f"读取文件内容失败: {e}")
+            raise
 
     def _split_text_to_chunks(self, content: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
         """将文本分割为块"""
