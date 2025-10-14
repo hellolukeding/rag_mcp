@@ -56,9 +56,28 @@ class DatabaseManager:
                     file_path TEXT NOT NULL,
                     file_type TEXT NOT NULL,
                     file_size INTEGER NOT NULL,
+                    vectorized BOOLEAN DEFAULT FALSE,
+                    vectorized_at TIMESTAMP NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # 为已存在的files表添加向量化字段（如果不存在的话）
+            try:
+                await db.execute("""
+                    ALTER TABLE files ADD COLUMN vectorized BOOLEAN DEFAULT FALSE
+                """)
+            except Exception:
+                # 字段已存在，忽略错误
+                pass
+
+            try:
+                await db.execute("""
+                    ALTER TABLE files ADD COLUMN vectorized_at TIMESTAMP NULL
+                """)
+            except Exception:
+                # 字段已存在，忽略错误
+                pass
             await db.commit()
 
     async def insert_document(
@@ -280,8 +299,8 @@ class DatabaseManager:
         """插入文件记录"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("""
-                INSERT INTO files (file_id, original_name, file_name, file_path, file_type, file_size)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO files (file_id, original_name, file_name, file_path, file_type, file_size, vectorized)
+                VALUES (?, ?, ?, ?, ?, ?, FALSE)
             """, (file_id, original_name, file_name, file_path, file_type, file_size))
             await db.commit()
             return cursor.lastrowid
@@ -289,26 +308,30 @@ class DatabaseManager:
     async def get_file_by_id(self, file_id: str) -> Optional[dict]:
         """根据文件ID获取文件信息"""
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
                 SELECT * FROM files WHERE file_id = ?
             """, (file_id,))
             row = await cursor.fetchone()
             if row:
                 return {
-                    "id": row[0],
-                    "file_id": row[1],
-                    "original_name": row[2],
-                    "file_name": row[3],
-                    "file_path": row[4],
-                    "file_type": row[5],
-                    "file_size": row[6],
-                    "created_at": row[7]
+                    "id": row["id"],
+                    "file_id": row["file_id"],
+                    "original_name": row["original_name"],
+                    "file_name": row["file_name"],
+                    "file_path": row["file_path"],
+                    "file_type": row["file_type"],
+                    "file_size": row["file_size"],
+                    "vectorized": bool(row["vectorized"]) if "vectorized" in row.keys() else False,
+                    "vectorized_at": row["vectorized_at"] if "vectorized_at" in row.keys() else None,
+                    "created_at": row["created_at"]
                 }
             return None
 
     async def get_all_files(self) -> List[dict]:
         """获取所有文件信息"""
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
                 SELECT * FROM files ORDER BY created_at DESC
             """)
@@ -316,14 +339,57 @@ class DatabaseManager:
             files = []
             for row in rows:
                 files.append({
-                    "id": row[0],
-                    "file_id": row[1],
-                    "original_name": row[2],
-                    "file_name": row[3],
-                    "file_path": row[4],
-                    "file_type": row[5],
-                    "file_size": row[6],
-                    "created_at": row[7]
+                    "id": row["id"],
+                    "file_id": row["file_id"],
+                    "original_name": row["original_name"],
+                    "file_name": row["file_name"],
+                    "file_path": row["file_path"],
+                    "file_type": row["file_type"],
+                    "file_size": row["file_size"],
+                    "vectorized": bool(row["vectorized"]) if "vectorized" in row.keys() else False,
+                    "vectorized_at": row["vectorized_at"] if "vectorized_at" in row.keys() else None,
+                    "created_at": row["created_at"]
+                })
+            return files
+
+    async def update_file_vectorized_status(self, file_id: str, vectorized: bool) -> bool:
+        """更新文件向量化状态"""
+        async with aiosqlite.connect(self.db_path) as db:
+            if vectorized:
+                cursor = await db.execute("""
+                    UPDATE files SET vectorized = TRUE, vectorized_at = CURRENT_TIMESTAMP
+                    WHERE file_id = ?
+                """, (file_id,))
+            else:
+                cursor = await db.execute("""
+                    UPDATE files SET vectorized = FALSE, vectorized_at = NULL
+                    WHERE file_id = ?
+                """, (file_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_unvectorized_files(self) -> List[dict]:
+        """获取未向量化的文件"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT * FROM files WHERE vectorized = FALSE OR vectorized IS NULL
+                ORDER BY created_at ASC
+            """)
+            rows = await cursor.fetchall()
+            files = []
+            for row in rows:
+                files.append({
+                    "id": row["id"],
+                    "file_id": row["file_id"],
+                    "original_name": row["original_name"],
+                    "file_name": row["file_name"],
+                    "file_path": row["file_path"],
+                    "file_type": row["file_type"],
+                    "file_size": row["file_size"],
+                    "vectorized": bool(row["vectorized"]) if "vectorized" in row.keys() else False,
+                    "vectorized_at": row["vectorized_at"] if "vectorized_at" in row.keys() else None,
+                    "created_at": row["created_at"]
                 })
             return files
 

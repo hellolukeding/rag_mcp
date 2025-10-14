@@ -19,6 +19,7 @@ pypdf2 = "^3.0.1"
 python-magic = "^0.4.27"
 python-dotenv = "^1.1.1"
 openai = "^2.3.0"
+loguru = "^0.7.3"
 
 [build-system]
 requires = ["poetry-core"]

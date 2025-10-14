@@ -1,249 +1,317 @@
-import asyncio
+"""
+任务队列向量化API
+用于管理异步向量化任务
+"""
+
 import os
-import uuid
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict, List, Optional
 
-import PyPDF2
-from docx import Document
-from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, status
-from openai import OpenAI
+from pydantic import BaseModel
 
-from core.schemas import DocumentChunk, DocumentCreate
-from core.services import DocumentService
-
-# 加载环境变量
-load_dotenv()
+from core.vectorize import TaskFile, get_vectorize_instance
+from database.models import db_manager
+from utils.logger import logger
 
 router = APIRouter()
 
-# 初始化OpenAI客户端
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    base_url=os.getenv("OPENAI_URL")
-)
 
-document_service = DocumentService()
+class VectorizeTaskRequest(BaseModel):
+    """向量化任务请求"""
+    file_id: str
+    file_path: str
 
 
-class DocumentProcessor:
-    """文档处理器"""
-
-    @staticmethod
-    def extract_text_from_docx(file_path: str) -> str:
-        """从DOCX文件提取文本"""
-        try:
-            doc = Document(file_path)
-            text = ""
-            for paragraph in doc.paragraphs:
-                text += paragraph.text + "\n"
-            return text.strip()
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"无法解析DOCX文件: {str(e)}"
-            )
-
-    @staticmethod
-    def extract_text_from_pdf(file_path: str) -> str:
-        """从PDF文件提取文本"""
-        try:
-            text = ""
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
-            return text.strip()
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"无法解析PDF文件: {str(e)}"
-            )
-
-    @staticmethod
-    def extract_text_from_txt(file_path: str) -> str:
-        """从TXT文件提取文本"""
-        try:
-            with open(file_path, 'r', encoding='utf-8') as file:
-                return file.read().strip()
-        except UnicodeDecodeError:
-            # 尝试其他编码
-            try:
-                with open(file_path, 'r', encoding='gbk') as file:
-                    return file.read().strip()
-            except Exception as e:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"无法读取TXT文件: {str(e)}"
-                )
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"无法读取TXT文件: {str(e)}"
-            )
-
-    def extract_text(self, file_path: str) -> str:
-        """根据文件类型提取文本"""
-        file_extension = Path(file_path).suffix.lower()
-
-        if file_extension == '.docx':
-            return self.extract_text_from_docx(file_path)
-        elif file_extension == '.pdf':
-            return self.extract_text_from_pdf(file_path)
-        elif file_extension in ['.txt', '.md']:
-            return self.extract_text_from_txt(file_path)
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"不支持的文件类型: {file_extension}"
-            )
-
-    @staticmethod
-    def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100) -> List[str]:
-        """将文本分割成块"""
-        if len(text) <= chunk_size:
-            return [text]
-
-        chunks = []
-        start = 0
-
-        while start < len(text):
-            end = min(start + chunk_size, len(text))
-
-            # 尝试在句号、换行符或空格处分割
-            if end < len(text):
-                for delimiter in ['\n\n', '\n', '。', '. ', ' ']:
-                    split_pos = text.rfind(delimiter, start, end)
-                    if split_pos > start:
-                        end = split_pos + len(delimiter)
-                        break
-
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-
-            start = end - overlap if end < len(text) else end
-
-        return chunks
+class VectorizeTaskResponse(BaseModel):
+    """向量化任务响应"""
+    success: bool
+    message: str
+    task_id: Optional[str] = None
+    data: Optional[Dict] = None
 
 
-class EmbeddingService:
-    """嵌入向量服务"""
-
-    def __init__(self):
-        self.model_name = os.getenv("MODEL_NAME", "Qwen/Qwen3-Embedding-8B")
-
-    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """获取文本的嵌入向量"""
-        try:
-            # 使用线程池执行同步的OpenAI API调用
-            loop = asyncio.get_event_loop()
-            with ThreadPoolExecutor() as executor:
-                response = await loop.run_in_executor(
-                    executor,
-                    lambda: client.embeddings.create(
-                        input=texts,
-                        model=self.model_name
-                    )
-                )
-
-            embeddings = [data.embedding for data in response.data]
-            return embeddings
-
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"获取嵌入向量失败: {str(e)}"
-            )
+class TaskStatusResponse(BaseModel):
+    """任务状态响应"""
+    success: bool
+    message: str
+    data: Optional[Dict] = None
 
 
-# 初始化服务
-processor = DocumentProcessor()
-embedding_service = EmbeddingService()
-
-
-@router.post("/vectorize", status_code=status.HTTP_200_OK)
-async def vectorize_file(file_path: str):
+@router.post("/task/vectorize", response_model=VectorizeTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_vectorize_task(request: VectorizeTaskRequest):
     """
-    向量化文件并存储到数据库
+    创建向量化任务
 
     Args:
-        file_path: 上传文件的路径，例如 "upload/b9cbbc03-6608-4b17-95e5-281a5a8f4e83.docx"
+        request: 包含file_id和file_path的请求
 
     Returns:
-        处理结果信息
+        任务ID和状态信息
     """
     try:
+        # 获取向量化服务实例
+        vectorize_service = get_vectorize_instance()
+
         # 检查文件是否存在
-        full_path = Path(file_path)
+        full_path = Path(request.file_path)
         if not full_path.exists():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"文件不存在: {file_path}"
+                detail=f"文件不存在: {request.file_path}"
             )
 
-        # 提取文件名和扩展名
-        filename = full_path.name
-        file_extension = full_path.suffix.lower()
+        # 初始化数据库并获取文件信息
+        await db_manager.init_database()
+        file_info = await db_manager.get_file_by_id(request.file_id)
 
-        # 提取文本内容
-        text_content = processor.extract_text(str(full_path))
-
-        if not text_content.strip():
+        if not file_info:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="文件内容为空或无法提取文本"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"数据库中未找到文件记录: {request.file_id}"
             )
 
-        # 分割文本
-        text_chunks = processor.chunk_text(text_content)
+        # 检查文件是否已经向量化
+        if file_info.get("vectorized", False):
+            return VectorizeTaskResponse(
+                success=True,
+                message="文件已经向量化完成",
+                data={
+                    "file_id": request.file_id,
+                    "original_name": file_info["original_name"],
+                    "vectorized_at": file_info["vectorized_at"],
+                    "already_vectorized": True
+                }
+            )
 
-        # 获取嵌入向量
-        embeddings = await embedding_service.get_embeddings(text_chunks)
-
-        # 创建文档记录
-        document_data = DocumentCreate(
-            filename=filename,
-            file_path=file_path,
-            content=text_content,
-            file_type=file_extension,
-            file_size=full_path.stat().st_size
+        # 创建TaskFile对象
+        task_file = TaskFile(
+            file_id=file_info["file_id"],
+            original_name=file_info["original_name"],
+            file_name=file_info["file_name"],
+            file_path=file_info["file_path"],
+            file_type=file_info["file_type"],
+            file_size=file_info["file_size"],
+            created_at=file_info["created_at"]
         )
 
-        # 保存文档到数据库
-        document = document_service.create_document(document_data)
+        # 添加到任务队列
+        task_id = vectorize_service.add_task(task_file)
 
-        # 保存文档块和向量
-        chunks_created = 0
-        for i, (chunk_text, embedding) in enumerate(zip(text_chunks, embeddings)):
-            chunk_data = DocumentChunk(
-                document_id=document.id,
-                chunk_index=i,
-                content=chunk_text,
-                embedding=embedding
-            )
-            document_service.create_document_chunk(chunk_data)
-            chunks_created += 1
+        logger.info(f"创建向量化任务成功: {task_id}, 文件: {file_info['original_name']}")
 
-        return {
-            "success": True,
-            "message": "文件向量化成功",
-            "data": {
-                "document_id": document.id,
-                "filename": filename,
-                "file_path": file_path,
-                "total_chunks": chunks_created,
-                "text_length": len(text_content),
-                "file_type": file_extension
+        return VectorizeTaskResponse(
+            success=True,
+            message="向量化任务已创建",
+            task_id=task_id,
+            data={
+                "file_id": request.file_id,
+                "original_name": file_info["original_name"],
+                "file_size": file_info["file_size"],
+                "file_type": file_info["file_type"],
+                "task_id": task_id
             }
-        }
+        )
 
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"创建向量化任务失败: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"向量化处理失败: {str(e)}"
+            detail=f"创建向量化任务失败: {str(e)}"
+        )
+
+
+@router.get("/task/{task_id}/status", response_model=TaskStatusResponse)
+async def get_task_status(task_id: str):
+    """
+    获取任务状态
+
+    Args:
+        task_id: 任务ID
+
+    Returns:
+        任务状态信息
+    """
+    try:
+        vectorize_service = get_vectorize_instance()
+        task_status = vectorize_service.get_task_status(task_id)
+
+        if not task_status:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"任务未找到: {task_id}"
+            )
+
+        return TaskStatusResponse(
+            success=True,
+            message="获取任务状态成功",
+            data=task_status
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取任务状态失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取任务状态失败: {str(e)}"
+        )
+
+
+@router.get("/tasks", response_model=TaskStatusResponse)
+async def get_all_tasks():
+    """
+    获取所有任务状态
+
+    Returns:
+        所有任务的状态信息
+    """
+    try:
+        vectorize_service = get_vectorize_instance()
+        all_tasks = vectorize_service.get_all_tasks()
+
+        return TaskStatusResponse(
+            success=True,
+            message=f"获取任务列表成功，共 {len(all_tasks)} 个任务",
+            data={
+                "tasks": all_tasks,
+                "total_count": len(all_tasks)
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"获取任务列表失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取任务列表失败: {str(e)}"
+        )
+
+
+@router.get("/files/unvectorized", response_model=TaskStatusResponse)
+async def get_unvectorized_files():
+    """
+    获取未向量化的文件列表
+
+    Returns:
+        未向量化的文件列表
+    """
+    try:
+        vectorize_service = get_vectorize_instance()
+        unvectorized_files = await vectorize_service.get_unvectorized_files()
+
+        return TaskStatusResponse(
+            success=True,
+            message=f"获取未向量化文件列表成功，共 {len(unvectorized_files)} 个文件",
+            data={
+                "files": unvectorized_files,
+                "total_count": len(unvectorized_files)
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"获取未向量化文件列表失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取未向量化文件列表失败: {str(e)}"
+        )
+
+
+@router.get("/files/{file_id}/status", response_model=TaskStatusResponse)
+async def get_file_vectorized_status(file_id: str):
+    """
+    获取文件向量化状态
+
+    Args:
+        file_id: 文件ID
+
+    Returns:
+        文件向量化状态信息
+    """
+    try:
+        vectorize_service = get_vectorize_instance()
+        file_status = await vectorize_service.get_file_vectorized_status(file_id)
+
+        if not file_status:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"文件未找到: {file_id}"
+            )
+
+        return TaskStatusResponse(
+            success=True,
+            message="获取文件向量化状态成功",
+            data=file_status
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取文件向量化状态失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取文件向量化状态失败: {str(e)}"
+        )
+
+
+@router.post("/files/batch_vectorize", response_model=TaskStatusResponse)
+async def batch_vectorize_files():
+    """
+    批量向量化所有未向量化的文件
+
+    Returns:
+        批量任务创建结果
+    """
+    try:
+        vectorize_service = get_vectorize_instance()
+
+        # 获取未向量化的文件
+        unvectorized_files = await vectorize_service.get_unvectorized_files()
+
+        if not unvectorized_files:
+            return TaskStatusResponse(
+                success=True,
+                message="没有需要向量化的文件",
+                data={
+                    "files_processed": 0,
+                    "task_ids": []
+                }
+            )
+
+        task_ids = []
+
+        # 为每个文件创建向量化任务
+        for file_info in unvectorized_files:
+            task_file = TaskFile(
+                file_id=file_info["file_id"],
+                original_name=file_info["original_name"],
+                file_name=file_info["file_name"],
+                file_path=file_info["file_path"],
+                file_type=file_info["file_type"],
+                file_size=file_info["file_size"],
+                created_at=file_info["created_at"]
+            )
+
+            task_id = vectorize_service.add_task(task_file)
+            task_ids.append(task_id)
+
+            logger.info(f"为文件 {file_info['original_name']} 创建向量化任务: {task_id}")
+
+        return TaskStatusResponse(
+            success=True,
+            message=f"批量向量化任务已创建，共 {len(task_ids)} 个任务",
+            data={
+                "files_processed": len(unvectorized_files),
+                "task_ids": task_ids,
+                "files": [{"file_id": f["file_id"], "original_name": f["original_name"]}
+                          for f in unvectorized_files]
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"批量向量化文件失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"批量向量化文件失败: {str(e)}"
         )

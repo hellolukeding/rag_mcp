@@ -1,18 +1,33 @@
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from api.upload import router as upload_router
-from api.vectorize import router as vectorize_router
+from api.vectorize import router as task_vectorize_router
+from core.vectorize import get_vectorize_instance
 from database.models import db_manager
+from utils.logger import logger
+
+load_dotenv()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动时初始化数据库
     await db_manager.init_database()
+
+    # 启动向量化服务
+    logger.info("正在启动向量化服务...")
+    vectorize_service = get_vectorize_instance()
+    logger.info("向量化服务启动完成")
+
     yield
-    # 关闭时的清理工作（如果需要）
+
+    # 关闭时的清理工作
+    logger.info("正在关闭向量化服务...")
+    vectorize_service.stop()
+    logger.info("向量化服务已关闭")
 
 
 app = FastAPI(
@@ -24,11 +39,12 @@ app = FastAPI(
 
 # 注册路由
 app.include_router(upload_router, prefix="/api/v1", tags=["upload"])
-app.include_router(vectorize_router, prefix="/api/v1", tags=["vectorize"])
+app.include_router(task_vectorize_router, prefix="/api/v1", tags=["vectorize"])
 
 
 @app.get("/")
 async def root():
+
     return {
         "message": "Welcome to RAG-MCP API",
         "version": "0.1.0",
