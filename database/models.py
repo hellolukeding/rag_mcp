@@ -12,6 +12,8 @@ class DatabaseManager:
     async def init_database(self):
         """初始化数据库表"""
         async with aiosqlite.connect(self.db_path) as db:
+            # 启用外键约束
+            await db.execute("PRAGMA foreign_keys = ON")
             # 更新documents表结构以支持文件信息
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
@@ -392,6 +394,53 @@ class DatabaseManager:
                     "created_at": row["created_at"]
                 })
             return files
+
+    async def delete_documents_by_file_path(self, file_path: str) -> int:
+        """根据文件路径删除相关的文档记录（包括文档块）"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                DELETE FROM documents WHERE file_path = ?
+            """, (file_path,))
+            await db.commit()
+            return cursor.rowcount
+
+    async def delete_file_and_documents(self, file_id: str) -> bool:
+        """删除文件记录及相关的文档数据"""
+        async with aiosqlite.connect(self.db_path) as db:
+            # 启用外键约束
+            await db.execute("PRAGMA foreign_keys = ON")
+
+            # 先获取文件信息
+            cursor = await db.execute("""
+                SELECT file_path FROM files WHERE file_id = ?
+            """, (file_id,))
+            file_row = await cursor.fetchone()
+
+            if not file_row:
+                return False
+
+            file_path = file_row[0]
+
+            # 手动删除相关的文档块（确保删除）
+            await db.execute("""
+                DELETE FROM document_chunks 
+                WHERE document_id IN (
+                    SELECT id FROM documents WHERE file_path = ?
+                )
+            """, (file_path,))
+
+            # 删除相关的文档记录
+            await db.execute("""
+                DELETE FROM documents WHERE file_path = ?
+            """, (file_path,))
+
+            # 删除文件记录
+            cursor = await db.execute("""
+                DELETE FROM files WHERE file_id = ?
+            """, (file_id,))
+
+            await db.commit()
+            return cursor.rowcount > 0
 
     async def delete_file(self, file_id: str) -> bool:
         """删除文件记录"""

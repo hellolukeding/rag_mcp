@@ -79,6 +79,8 @@ class FileInfoResponse(BaseModel):
     file_type: str
     file_size: int
     created_at: str
+    vectorized: bool = False
+    vectorized_at: Optional[str] = None
 
 
 class FileListResponse(BaseModel):

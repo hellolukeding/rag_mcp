@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from core.schemas import (ApiResponse, FileInfoResponse, FileListResponse,
                           FileUploadResponse)
 from database.models import db_manager
+from utils.logger import logger
 
 router = APIRouter()
 
@@ -156,7 +157,7 @@ async def get_file_info(file_id: str) -> ApiResponse[FileInfoResponse]:
 @router.delete("/files/{file_id}", status_code=status.HTTP_200_OK)
 async def delete_file(file_id: str) -> ApiResponse[None]:
     """
-    根据文件ID删除文件
+    根据文件ID删除文件及其向量数据
     """
     try:
         file_info = await db_manager.get_file_by_id(file_id)
@@ -167,8 +168,8 @@ async def delete_file(file_id: str) -> ApiResponse[None]:
                 data=None
             )
 
-        # 删除文件记录
-        success = await db_manager.delete_file(file_id)
+        # 删除文件记录和相关的文档、向量数据
+        success = await db_manager.delete_file_and_documents(file_id)
         if not success:
             return ApiResponse(
                 code=500,
@@ -179,15 +180,24 @@ async def delete_file(file_id: str) -> ApiResponse[None]:
         # 删除实际文件
         file_path = Path(file_info["file_path"])
         if file_path.exists():
-            os.remove(file_path)
+            try:
+                os.remove(file_path)
+                logger.info(f"已删除物理文件: {file_path}")
+            except Exception as e:
+                logger.warning(f"删除物理文件失败: {e}")
+                # 物理文件删除失败不影响数据库记录的删除
+
+        logger.info(
+            f"成功删除文件及其向量数据: {file_info['original_name']} (ID: {file_id})")
 
         return ApiResponse(
             code=200,
-            msg="文件删除成功",
+            msg="文件及向量数据删除成功",
             data=None
         )
 
     except Exception as e:
+        logger.error(f"删除文件失败: {e}")
         return ApiResponse(
             code=500,
             msg=f"删除文件失败: {str(e)}",
@@ -210,7 +220,9 @@ async def list_files() -> ApiResponse[FileListResponse]:
                 file_path=file["file_path"],
                 file_type=file["file_type"],
                 file_size=file["file_size"],
-                created_at=file["created_at"]
+                created_at=file["created_at"],
+                vectorized=file.get("vectorized", False),
+                vectorized_at=file.get("vectorized_at")
             ) for file in files
         ]
 

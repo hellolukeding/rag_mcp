@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.upload import router as upload_router
 from api.vectorize import router as task_vectorize_router
@@ -35,6 +36,28 @@ app = FastAPI(
     description="A RAG (Retrieval-Augmented Generation) API with MCP integration",
     version="0.1.0",
     lifespan=lifespan
+)
+
+# 配置CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+
+        "http://localhost:5173",  # Vite开发服务器
+
+        # 生产环境域名可以在这里添加
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=[
+        "Accept",
+        "Accept-Language",
+        "Content-Language",
+        "Content-Type",
+        "Authorization",
+        "X-Requested-With",
+        "X-CSRF-Token",
+    ],
 )
 
 # 注册路由
