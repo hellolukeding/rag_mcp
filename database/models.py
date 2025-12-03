@@ -1,57 +1,103 @@
 import json
+import os
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
-import aiosqlite
+import asyncpg
+from pgvector.asyncpg import register_vector
+
+# Try to import config, fallback to defaults if not found
+try:
+    from mcp_server.core.config import config
+except ImportError:
+    # Fallback config for standalone testing or if import fails
+    class MockConfig:
+        class DatabaseConfig:
+            host = os.getenv("POSTGRES_HOST", "localhost")
+            port = int(os.getenv("POSTGRES_PORT", "5432"))
+            user = os.getenv("POSTGRES_USER", "psql")
+            password = os.getenv("POSTGRES_PASSWORD", "luoji@123")
+            database = os.getenv("POSTGRES_DB", "ai_chat")
+
+            @property
+            def dsn(self) -> str:
+                return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+
+        db = DatabaseConfig()
+
+    config = MockConfig()
 
 
 class DatabaseManager:
-    def __init__(self, db_path: str = "rag_mcp.db"):
-        self.db_path = db_path
+    def __init__(self):
+        self.pool: Optional[asyncpg.Pool] = None
+
+    async def get_pool(self) -> asyncpg.Pool:
+        if self.pool is None:
+            self.pool = await asyncpg.create_pool(
+                dsn=config.db.dsn,
+                min_size=1,
+                max_size=10
+            )
+        return self.pool
 
     async def init_database(self):
         """初始化数据库表"""
-        async with aiosqlite.connect(self.db_path) as db:
-            # 启用外键约束
-            await db.execute("PRAGMA foreign_keys = ON")
-            # 更新documents表结构以支持文件信息
-            await db.execute("""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            # Enable vector extension
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
+            # Register vector type for this connection
+            await register_vector(conn)
+
+            # Create documents table
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     filename TEXT NOT NULL,
                     file_path TEXT NOT NULL,
                     content TEXT NOT NULL,
                     file_type TEXT,
                     file_size INTEGER,
-                    metadata TEXT,
+                    metadata JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
-            # 新增document_chunks表用于存储文档块和向量
-            await db.execute("""
+            # Create document_chunks table with vector support
+            # Using 1536 dimensions for OpenAI text-embedding-ada-002
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS document_chunks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    document_id INTEGER NOT NULL,
+                    id SERIAL PRIMARY KEY,
+                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
                     chunk_index INTEGER NOT NULL,
                     content TEXT NOT NULL,
-                    embedding TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
+                    embedding vector(1536),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
-            # 添加索引以提高查询性能
-            await db.execute("""
+            # Create index for document_id
+            await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id 
                 ON document_chunks(document_id)
             """)
 
-            # 新增的files表用于记录上传文件
-            await db.execute("""
+            # Create HNSW index for vector search
+            try:
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding 
+                    ON document_chunks USING hnsw (embedding vector_cosine_ops)
+                """)
+            except Exception as e:
+                print(f"Warning: Could not create vector index: {e}")
+
+            # Create files table
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS files (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     file_id TEXT UNIQUE NOT NULL,
                     original_name TEXT NOT NULL,
                     file_name TEXT NOT NULL,
@@ -64,40 +110,6 @@ class DatabaseManager:
                 )
             """)
 
-            # 为已存在的files表添加向量化字段（如果不存在的话）
-            try:
-                await db.execute("""
-                    ALTER TABLE files ADD COLUMN vectorized TEXT DEFAULT 'pending'
-                """)
-            except Exception:
-                # 字段已存在，忽略错误
-                pass
-
-            try:
-                await db.execute("""
-                    ALTER TABLE files ADD COLUMN vectorized_at TIMESTAMP NULL
-                """)
-            except Exception:
-                # 字段已存在，忽略错误
-                pass
-
-            # 如果向量化字段已存在但是BOOLEAN类型，需要转换为TEXT类型
-            try:
-                # 检查现有数据并转换
-                await db.execute("""
-                    UPDATE files SET vectorized = 'completed' WHERE vectorized = '1' OR vectorized = 1 OR vectorized = 'TRUE'
-                """)
-                await db.execute("""
-                    UPDATE files SET vectorized = 'pending' WHERE vectorized = '0' OR vectorized = 0 OR vectorized = 'FALSE'
-                """)
-                await db.execute("""
-                    UPDATE files SET vectorized = 'pending' WHERE vectorized IS NULL
-                """)
-            except Exception:
-                # 如果转换失败，忽略错误
-                pass
-            await db.commit()
-
     async def insert_document(
         self,
         filename: str,
@@ -108,20 +120,14 @@ class DatabaseManager:
         metadata: Optional[dict] = None
     ) -> int:
         """插入文档"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
                 INSERT INTO documents (filename, file_path, content, file_type, file_size, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                filename,
-                file_path,
-                content,
-                file_type,
-                file_size,
-                json.dumps(metadata) if metadata else None
-            ))
-            await db.commit()
-            return cursor.lastrowid
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id
+            """, filename, file_path, content, file_type, file_size, json.dumps(metadata) if metadata else None)
+            return row['id']
 
     async def insert_document_chunk(
         self,
@@ -131,27 +137,23 @@ class DatabaseManager:
         embedding: List[float]
     ) -> int:
         """插入文档块"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            await register_vector(conn)
+            row = await conn.fetchrow("""
                 INSERT INTO document_chunks (document_id, chunk_index, content, embedding)
-                VALUES (?, ?, ?, ?)
-            """, (
-                document_id,
-                chunk_index,
-                content,
-                json.dumps(embedding)
-            ))
-            await db.commit()
-            return cursor.lastrowid
+                VALUES ($1, $2, $3, $4)
+                RETURNING id
+            """, document_id, chunk_index, content, embedding)
+            return row['id']
 
     async def get_document(self, doc_id: int) -> Optional[dict]:
         """获取单个文档"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM documents WHERE id = ?", (doc_id,)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM documents WHERE id = $1", doc_id
             )
-            row = await cursor.fetchone()
 
             if row:
                 return {
@@ -161,7 +163,7 @@ class DatabaseManager:
                     "content": row["content"],
                     "file_type": row["file_type"],
                     "file_size": row["file_size"],
-                    "metadata": json.loads(row["metadata"]) if row["metadata"] else None,
+                    "metadata": json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"]
                 }
@@ -169,14 +171,14 @@ class DatabaseManager:
 
     async def get_document_chunks(self, document_id: int) -> List[dict]:
         """获取文档的所有块"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            await register_vector(conn)
+            rows = await conn.fetch("""
                 SELECT * FROM document_chunks 
-                WHERE document_id = ? 
+                WHERE document_id = $1 
                 ORDER BY chunk_index
-            """, (document_id,))
-            rows = await cursor.fetchall()
+            """, document_id)
 
             chunks = []
             for row in rows:
@@ -185,17 +187,16 @@ class DatabaseManager:
                     "document_id": row["document_id"],
                     "chunk_index": row["chunk_index"],
                     "content": row["content"],
-                    "embedding": json.loads(row["embedding"]),
+                    "embedding": row["embedding"].tolist() if hasattr(row["embedding"], "tolist") else row["embedding"],
                     "created_at": row["created_at"]
                 })
             return chunks
 
     async def get_all_documents(self) -> List[dict]:
         """获取所有文档"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM documents ORDER BY created_at DESC")
-            rows = await cursor.fetchall()
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM documents ORDER BY created_at DESC")
 
             documents = []
             for row in rows:
@@ -206,7 +207,7 @@ class DatabaseManager:
                     "content": row["content"],
                     "file_type": row["file_type"],
                     "file_size": row["file_size"],
-                    "metadata": json.loads(row["metadata"]) if row["metadata"] else None,
+                    "metadata": json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"]
                 })
@@ -215,33 +216,36 @@ class DatabaseManager:
 
     async def get_all_embeddings(self) -> List[Tuple[int, int, List[float]]]:
         """获取所有文档块的嵌入向量"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            await register_vector(conn)
+            rows = await conn.fetch("""
                 SELECT document_id, id, embedding 
                 FROM document_chunks 
                 ORDER BY document_id, chunk_index
             """)
-            rows = await cursor.fetchall()
 
             embeddings = []
             for row in rows:
-                document_id, chunk_id, embedding_json = row
-                embedding = json.loads(embedding_json)
+                document_id = row["document_id"]
+                chunk_id = row["id"]
+                embedding = row["embedding"].tolist() if hasattr(
+                    row["embedding"], "tolist") else row["embedding"]
                 embeddings.append((document_id, chunk_id, embedding))
 
             return embeddings
 
     async def get_all_chunk_embeddings(self) -> List[dict]:
         """获取所有文档块的完整信息和嵌入向量"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            await register_vector(conn)
+            rows = await conn.fetch("""
                 SELECT dc.*, d.filename, d.file_path
                 FROM document_chunks dc
                 JOIN documents d ON dc.document_id = d.id
                 ORDER BY dc.document_id, dc.chunk_index
             """)
-            rows = await cursor.fetchall()
 
             chunks = []
             for row in rows:
@@ -250,7 +254,7 @@ class DatabaseManager:
                     "document_id": row["document_id"],
                     "chunk_index": row["chunk_index"],
                     "content": row["content"],
-                    "embedding": json.loads(row["embedding"]),
+                    "embedding": row["embedding"].tolist() if hasattr(row["embedding"], "tolist") else row["embedding"],
                     "filename": row["filename"],
                     "file_path": row["file_path"],
                     "created_at": row["created_at"]
@@ -259,10 +263,11 @@ class DatabaseManager:
 
     async def delete_document(self, doc_id: int) -> bool:
         """删除文档"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-            await db.commit()
-            return cursor.rowcount > 0
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM documents WHERE id = $1", doc_id)
+            # result is like "DELETE 1"
+            return int(result.split()[1]) > 0
 
     async def update_document(
         self,
@@ -275,22 +280,27 @@ class DatabaseManager:
         """更新文档"""
         updates = []
         values = []
+        param_idx = 1
 
         if title is not None:
-            updates.append("title = ?")
+            updates.append(f"title = ${param_idx}")
             values.append(title)
+            param_idx += 1
 
         if content is not None:
-            updates.append("content = ?")
+            updates.append(f"content = ${param_idx}")
             values.append(content)
+            param_idx += 1
 
         if embedding is not None:
-            updates.append("embedding = ?")
-            values.append(json.dumps(embedding))
+            updates.append(f"embedding = ${param_idx}")
+            values.append(embedding)
+            param_idx += 1
 
         if metadata is not None:
-            updates.append("metadata = ?")
+            updates.append(f"metadata = ${param_idx}")
             values.append(json.dumps(metadata))
+            param_idx += 1
 
         if not updates:
             return False
@@ -298,12 +308,14 @@ class DatabaseManager:
         updates.append("updated_at = CURRENT_TIMESTAMP")
         values.append(doc_id)
 
-        query = f"UPDATE documents SET {', '.join(updates)} WHERE id = ?"
+        query = f"UPDATE documents SET {', '.join(updates)} WHERE id = ${param_idx}"
 
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(query, values)
-            await db.commit()
-            return cursor.rowcount > 0
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            if embedding is not None:
+                await register_vector(conn)
+            result = await conn.execute(query, *values)
+            return int(result.split()[1]) > 0
 
     async def insert_file(
         self,
@@ -315,22 +327,22 @@ class DatabaseManager:
         file_size: int
     ) -> int:
         """插入文件记录"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
                 INSERT INTO files (file_id, original_name, file_name, file_path, file_type, file_size, vectorized)
-                VALUES (?, ?, ?, ?, ?, ?, 'pending')
-            """, (file_id, original_name, file_name, file_path, file_type, file_size))
-            await db.commit()
-            return cursor.lastrowid
+                VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+                RETURNING id
+            """, file_id, original_name, file_name, file_path, file_type, file_size)
+            return row['id']
 
     async def get_file_by_id(self, file_id: str) -> Optional[dict]:
         """根据文件ID获取文件信息"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
-                SELECT * FROM files WHERE file_id = ?
-            """, (file_id,))
-            row = await cursor.fetchone()
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT * FROM files WHERE file_id = $1
+            """, file_id)
             if row:
                 return {
                     "id": row["id"],
@@ -340,20 +352,19 @@ class DatabaseManager:
                     "file_path": row["file_path"],
                     "file_type": row["file_type"],
                     "file_size": row["file_size"],
-                    "vectorized": row["vectorized"] if "vectorized" in row.keys() else "pending",
-                    "vectorized_at": row["vectorized_at"] if "vectorized_at" in row.keys() else None,
+                    "vectorized": row["vectorized"] if "vectorized" in row else "pending",
+                    "vectorized_at": row["vectorized_at"] if "vectorized_at" in row else None,
                     "created_at": row["created_at"]
                 }
             return None
 
     async def get_all_files(self) -> List[dict]:
         """获取所有文件信息"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
                 SELECT * FROM files ORDER BY created_at DESC
             """)
-            rows = await cursor.fetchall()
             files = []
             for row in rows:
                 files.append({
@@ -364,8 +375,8 @@ class DatabaseManager:
                     "file_path": row["file_path"],
                     "file_type": row["file_type"],
                     "file_size": row["file_size"],
-                    "vectorized": row["vectorized"] if "vectorized" in row.keys() else "pending",
-                    "vectorized_at": row["vectorized_at"] if "vectorized_at" in row.keys() else None,
+                    "vectorized": row["vectorized"] if "vectorized" in row else "pending",
+                    "vectorized_at": row["vectorized_at"] if "vectorized_at" in row else None,
                     "created_at": row["created_at"]
                 })
             return files
@@ -373,34 +384,29 @@ class DatabaseManager:
     async def update_file_vectorized_status(self, file_id: str, status: str) -> bool:
         """
         更新文件向量化状态
-
-        Args:
-            file_id: 文件ID
-            status: 向量化状态，支持: 'pending', 'processing', 'completed', 'failed'
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
             if status == 'completed':
-                cursor = await db.execute("""
-                    UPDATE files SET vectorized = ?, vectorized_at = CURRENT_TIMESTAMP
-                    WHERE file_id = ?
-                """, (status, file_id))
+                result = await conn.execute("""
+                    UPDATE files SET vectorized = $1, vectorized_at = CURRENT_TIMESTAMP
+                    WHERE file_id = $2
+                """, status, file_id)
             else:
-                cursor = await db.execute("""
-                    UPDATE files SET vectorized = ?, vectorized_at = NULL
-                    WHERE file_id = ?
-                """, (status, file_id))
-            await db.commit()
-            return cursor.rowcount > 0
+                result = await conn.execute("""
+                    UPDATE files SET vectorized = $1, vectorized_at = NULL
+                    WHERE file_id = $2
+                """, status, file_id)
+            return int(result.split()[1]) > 0
 
     async def get_unvectorized_files(self) -> List[dict]:
         """获取未向量化的文件（包括pending和failed状态）"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
                 SELECT * FROM files WHERE vectorized IN ('pending', 'failed') OR vectorized IS NULL
                 ORDER BY created_at ASC
             """)
-            rows = await cursor.fetchall()
             files = []
             for row in rows:
                 files.append({
@@ -411,67 +417,56 @@ class DatabaseManager:
                     "file_path": row["file_path"],
                     "file_type": row["file_type"],
                     "file_size": row["file_size"],
-                    "vectorized": bool(row["vectorized"]) if "vectorized" in row.keys() else False,
-                    "vectorized_at": row["vectorized_at"] if "vectorized_at" in row.keys() else None,
+                    "vectorized": bool(row["vectorized"]) if "vectorized" in row else False,
+                    "vectorized_at": row["vectorized_at"] if "vectorized_at" in row else None,
                     "created_at": row["created_at"]
                 })
             return files
 
     async def delete_documents_by_file_path(self, file_path: str) -> int:
         """根据文件路径删除相关的文档记录（包括文档块）"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
-                DELETE FROM documents WHERE file_path = ?
-            """, (file_path,))
-            await db.commit()
-            return cursor.rowcount
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("""
+                DELETE FROM documents WHERE file_path = $1
+            """, file_path)
+            return int(result.split()[1])
 
     async def delete_file_and_documents(self, file_id: str) -> bool:
         """删除文件记录及相关的文档数据"""
-        async with aiosqlite.connect(self.db_path) as db:
-            # 启用外键约束
-            await db.execute("PRAGMA foreign_keys = ON")
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # 先获取文件信息
+                file_row = await conn.fetchrow("""
+                    SELECT file_path FROM files WHERE file_id = $1
+                """, file_id)
 
-            # 先获取文件信息
-            cursor = await db.execute("""
-                SELECT file_path FROM files WHERE file_id = ?
-            """, (file_id,))
-            file_row = await cursor.fetchone()
+                if not file_row:
+                    return False
 
-            if not file_row:
-                return False
+                file_path = file_row['file_path']
 
-            file_path = file_row[0]
+                # 删除相关的文档记录 (CASCADE will handle chunks)
+                await conn.execute("""
+                    DELETE FROM documents WHERE file_path = $1
+                """, file_path)
 
-            # 手动删除相关的文档块（确保删除）
-            await db.execute("""
-                DELETE FROM document_chunks 
-                WHERE document_id IN (
-                    SELECT id FROM documents WHERE file_path = ?
-                )
-            """, (file_path,))
+                # 删除文件记录
+                result = await conn.execute("""
+                    DELETE FROM files WHERE file_id = $1
+                """, file_id)
 
-            # 删除相关的文档记录
-            await db.execute("""
-                DELETE FROM documents WHERE file_path = ?
-            """, (file_path,))
-
-            # 删除文件记录
-            cursor = await db.execute("""
-                DELETE FROM files WHERE file_id = ?
-            """, (file_id,))
-
-            await db.commit()
-            return cursor.rowcount > 0
+                return int(result.split()[1]) > 0
 
     async def delete_file(self, file_id: str) -> bool:
         """删除文件记录"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
-                DELETE FROM files WHERE file_id = ?
-            """, (file_id,))
-            await db.commit()
-            return cursor.rowcount > 0
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("""
+                DELETE FROM files WHERE file_id = $1
+            """, file_id)
+            return int(result.split()[1]) > 0
 
 
 # 全局数据库管理器实例

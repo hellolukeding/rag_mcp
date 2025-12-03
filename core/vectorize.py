@@ -1,5 +1,6 @@
 
 import asyncio
+import io
 import json
 import os
 import threading
@@ -14,6 +15,7 @@ from typing import Callable, Dict, List, Optional
 import openai
 from dotenv import load_dotenv
 
+from core.storage import minio_storage
 from database.models import DatabaseManager
 from utils.logger import logger
 
@@ -83,8 +85,7 @@ class VectorizeQueue:
         self.running = False
         self.progress_callbacks = []  # 进度回调函数列表
 
-        # 初始化数据库管理器和向量化客户端
-        self.db_manager = DatabaseManager()
+        # 初始化向量化客户端
         self._init_vectorize_client()
 
         logger.info(f"向量化队列初始化完成，最大工作线程数: {max_workers}")
@@ -262,24 +263,27 @@ class VectorizeQueue:
     def _read_file_content(self, task_file: TaskFile) -> str:
         """读取文件内容"""
         try:
+            # 从MinIO获取文件内容
+            # file_path 字段现在存储 MinIO 中的对象名称
+            file_content_bytes = asyncio.run(
+                minio_storage.get_file_content(task_file.file_path))
+
             file_type = task_file.file_type.lower()
 
             if file_type in [".md", ".markdown", ".txt"]:
                 # 处理文本文件
                 try:
-                    with open(task_file.file_path, 'r', encoding='utf-8') as f:
-                        return f.read()
+                    return file_content_bytes.decode('utf-8')
                 except UnicodeDecodeError:
                     # 如果UTF-8解码失败，尝试其他编码
-                    with open(task_file.file_path, 'r', encoding='gbk') as f:
-                        return f.read()
+                    return file_content_bytes.decode('gbk')
 
             elif file_type == ".pdf":
                 # 处理PDF文件
                 try:
                     import PyPDF2
                     text_content = ""
-                    with open(task_file.file_path, 'rb') as f:
+                    with io.BytesIO(file_content_bytes) as f:
                         pdf_reader = PyPDF2.PdfReader(f)
 
                         # 检查PDF是否加密
@@ -305,11 +309,12 @@ class VectorizeQueue:
                 # 处理DOCX文件
                 try:
                     from docx import Document
-                    doc = Document(task_file.file_path)
-                    text_content = ""
-                    for paragraph in doc.paragraphs:
-                        text_content += paragraph.text + "\n"
-                    return text_content.strip()
+                    with io.BytesIO(file_content_bytes) as f:
+                        doc = Document(f)
+                        text_content = ""
+                        for paragraph in doc.paragraphs:
+                            text_content += paragraph.text + "\n"
+                        return text_content.strip()
 
                 except ImportError:
                     raise Exception("DOCX处理库未安装，无法读取DOCX文件内容")
@@ -337,12 +342,13 @@ class VectorizeQueue:
     async def _vectorize_chunks(self, task: VectorizeTask, chunks: List[str]):
         """向量化文本块并存储到数据库"""
         # 初始化数据库
-        await self.db_manager.init_database()
+        db_manager = DatabaseManager()
+        await db_manager.init_database()
 
         # 检查文件记录是否已存在，如果不存在则插入
-        existing_file = await self.db_manager.get_file_by_id(task.task_file.file_id)
+        existing_file = await db_manager.get_file_by_id(task.task_file.file_id)
         if not existing_file:
-            file_id = await self.db_manager.insert_file(
+            file_id = await db_manager.insert_file(
                 file_id=task.task_file.file_id,
                 original_name=task.task_file.original_name,
                 file_name=task.task_file.file_name,
@@ -355,7 +361,7 @@ class VectorizeQueue:
             logger.info(f"文件记录已存在: {task.task_file.original_name}")
 
         # 插入文档记录
-        document_id = await self.db_manager.insert_document(
+        document_id = await db_manager.insert_document(
             filename=task.task_file.original_name,
             file_path=task.task_file.file_path,
             content='\n'.join(chunks),
@@ -373,7 +379,7 @@ class VectorizeQueue:
 
             # 保存到数据库
             for j, (chunk, embedding) in enumerate(zip(batch_chunks, embeddings)):
-                await self.db_manager.insert_document_chunk(
+                await db_manager.insert_document_chunk(
                     document_id=document_id,
                     chunk_index=i + j,
                     content=chunk,
@@ -409,8 +415,9 @@ class VectorizeQueue:
             status: 状态，支持: 'pending', 'processing', 'completed', 'failed'
         """
         try:
-            await self.db_manager.init_database()
-            success = await self.db_manager.update_file_vectorized_status(file_id, status)
+            db_manager = DatabaseManager()
+            await db_manager.init_database()
+            success = await db_manager.update_file_vectorized_status(file_id, status)
             if success:
                 status_map = {
                     'pending': '待处理',
@@ -483,8 +490,9 @@ class Vectorize:
     async def get_unvectorized_files(self) -> List[Dict]:
         """获取未向量化的文件列表"""
         try:
-            await self.queue.db_manager.init_database()
-            return await self.queue.db_manager.get_unvectorized_files()
+            db_manager = DatabaseManager()
+            await db_manager.init_database()
+            return await db_manager.get_unvectorized_files()
         except Exception as e:
             logger.error(f"获取未向量化文件列表失败: {e}")
             return []
@@ -492,8 +500,9 @@ class Vectorize:
     async def get_file_vectorized_status(self, file_id: str) -> Optional[Dict]:
         """获取文件向量化状态"""
         try:
-            await self.queue.db_manager.init_database()
-            file_info = await self.queue.db_manager.get_file_by_id(file_id)
+            db_manager = DatabaseManager()
+            await db_manager.init_database()
+            file_info = await db_manager.get_file_by_id(file_id)
             if file_info:
                 return {
                     "file_id": file_info["file_id"],

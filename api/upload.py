@@ -1,9 +1,9 @@
+import io
 import os
 import uuid
 from pathlib import Path
 from typing import Any, Dict
 
-import aiofiles
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
 
@@ -17,6 +17,7 @@ except ImportError:
 
 from core.schemas import (ApiResponse, FileContentResponse, FileInfoResponse,
                           FileListResponse, FileUploadResponse)
+from core.storage import minio_storage
 from database.models import db_manager
 from utils.logger import logger
 
@@ -30,10 +31,6 @@ ALLOWED_MIME_TYPES = {
     "text/markdown",  # markdown
     "text/plain"  # markdown files often detected as text/plain
 }
-
-# 上传目录
-UPLOAD_DIR = Path("upload")
-UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 def validate_file_type(filename: str, content: bytes) -> bool:
@@ -61,12 +58,12 @@ def validate_file_type(filename: str, content: bytes) -> bool:
     return True
 
 
-async def extract_file_content(file_path: Path, file_type: str) -> str:
+async def extract_file_content(content: bytes, file_type: str) -> str:
     """
     根据文件类型提取文件内容
 
     Args:
-        file_path: 文件路径
+        content: 文件内容字节
         file_type: 文件类型（扩展名）
 
     Returns:
@@ -76,12 +73,10 @@ async def extract_file_content(file_path: Path, file_type: str) -> str:
         if file_type in [".md", ".markdown", ".txt"]:
             # 处理文本文件
             try:
-                async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
-                    return await f.read()
+                return content.decode('utf-8')
             except UnicodeDecodeError:
                 # 如果UTF-8解码失败，尝试其他编码
-                async with aiofiles.open(file_path, 'r', encoding='gbk') as f:
-                    return await f.read()
+                return content.decode('gbk')
 
         elif file_type == ".pdf":
             # 处理PDF文件
@@ -90,7 +85,7 @@ async def extract_file_content(file_path: Path, file_type: str) -> str:
 
             text_content = ""
             try:
-                with open(file_path, 'rb') as f:
+                with io.BytesIO(content) as f:
                     pdf_reader = PyPDF2.PdfReader(f)
 
                     # 检查PDF是否加密
@@ -118,11 +113,12 @@ async def extract_file_content(file_path: Path, file_type: str) -> str:
             if Document is None:
                 return "DOCX处理库未安装，无法读取DOCX文件内容"
 
-            doc = Document(file_path)
-            text_content = ""
-            for paragraph in doc.paragraphs:
-                text_content += paragraph.text + "\n"
-            return text_content.strip()
+            with io.BytesIO(content) as f:
+                doc = Document(f)
+                text_content = ""
+                for paragraph in doc.paragraphs:
+                    text_content += paragraph.text + "\n"
+                return text_content.strip()
 
         else:
             return f"不支持的文件类型: {file_type}"
@@ -159,21 +155,20 @@ async def upload_file(file: UploadFile = File(...)) -> ApiResponse[FileUploadRes
 
         # 生成新的文件名（防止重名冲突）
         new_filename = f"{file_id}{file_ext}"
-        file_path = UPLOAD_DIR / new_filename
 
-        # 保存文件
-        async with aiofiles.open(file_path, 'wb') as f:
-            await f.write(content)
+        # 上传到MinIO
+        await minio_storage.upload_file(new_filename, content, file.content_type)
 
         # 获取文件大小
         file_size = len(content)
 
         # 记录到数据库
+        # file_path 字段现在存储 MinIO 中的对象名称
         await db_manager.insert_file(
             file_id=file_id,
             original_name=original_name,
             file_name=new_filename,
-            file_path=str(file_path),
+            file_path=new_filename,
             file_type=file_ext,
             file_size=file_size
         )
@@ -211,17 +206,20 @@ async def get_file_content(file_id: str) -> ApiResponse[FileContentResponse]:
                 data=None
             )
 
-        # 读取文件内容
-        file_path = Path(file_info["file_path"])
-        if not file_path.exists():
+        # 从MinIO获取文件内容
+        file_name = file_info["file_name"]
+        try:
+            content = await minio_storage.get_file_content(file_name)
+        except Exception as e:
+            logger.error(f"从MinIO获取文件失败: {e}")
             return ApiResponse(
                 code=404,
-                msg="物理文件不存在",
+                msg="文件内容获取失败",
                 data=None
             )
 
         # 根据文件类型提取内容
-        content = await extract_file_content(file_path, file_info["file_type"])
+        text_content = await extract_file_content(content, file_info["file_type"])
 
         return ApiResponse(
             code=200,
@@ -232,7 +230,7 @@ async def get_file_content(file_id: str) -> ApiResponse[FileContentResponse]:
                 file_name=file_info["file_name"],
                 file_type=file_info["file_type"],
                 file_size=file_info["file_size"],
-                content=content,
+                content=text_content,
                 created_at=str(file_info["created_at"]),
                 vectorized_status=file_info["vectorized"],
                 vectorized_at=str(
@@ -271,15 +269,14 @@ async def delete_file(file_id: str) -> ApiResponse[None]:
                 data=None
             )
 
-        # 删除实际文件
-        file_path = Path(file_info["file_path"])
-        if file_path.exists():
-            try:
-                os.remove(file_path)
-                logger.info(f"已删除物理文件: {file_path}")
-            except Exception as e:
-                logger.warning(f"删除物理文件失败: {e}")
-                # 物理文件删除失败不影响数据库记录的删除
+        # 删除MinIO中的文件
+        file_name = file_info["file_name"]
+        try:
+            await minio_storage.delete_file(file_name)
+            logger.info(f"已删除MinIO文件: {file_name}")
+        except Exception as e:
+            logger.warning(f"删除MinIO文件失败: {e}")
+            # MinIO文件删除失败不影响数据库记录的删除
 
         logger.info(
             f"成功删除文件及其向量数据: {file_info['original_name']} (ID: {file_id})")

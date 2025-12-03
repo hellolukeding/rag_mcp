@@ -30,6 +30,20 @@ class RAGConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    """Database configuration"""
+    host: str = "localhost"
+    port: int = 5432
+    user: str = "psql"
+    password: str = "luoji@123"
+    database: str = "ai_chat"
+
+    @property
+    def dsn(self) -> str:
+        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+
+
+@dataclass
 class ServerConfig:
     """Server configuration"""
     name: str = "rag-mcp-server"
@@ -50,6 +64,14 @@ class Config:
             model_name=os.getenv("MODEL_NAME",
                                  "text-embedding-ada-002"),
             timeout=float(os.getenv("EMBEDDING_TIMEOUT", "30.0"))
+        )
+
+        self.db = DatabaseConfig(
+            host=os.getenv("POSTGRES_HOST", "localhost"),
+            port=int(os.getenv("POSTGRES_PORT", "5432")),
+            user=os.getenv("POSTGRES_USER", "psql"),
+            password=os.getenv("POSTGRES_PASSWORD", "luoji@123"),
+            database=os.getenv("POSTGRES_DB", "ai_chat")
         )
 
         self.rag = RAGConfig(

@@ -135,7 +135,7 @@ curl -X POST "http://localhost:8000/api/v1/vectorize" \
 
 ## 数据库
 
-项目使用 SQLite 作为本地数据库，存储以下数据：
+项目使用 PostgreSQL 作为数据库，利用 JSONB 存储元数据，PGVector 存储向量数据，存储以下数据：
 
 - **文件信息表**：存储上传文件的基本信息
 - **文档表**：存储解析后的文档数据
@@ -184,7 +184,7 @@ curl -X POST "http://localhost:8000/api/v1/vectorize" \
 
 - **Web 框架**：FastAPI
 - **异步运行时**：Uvicorn
-- **数据库**：SQLite + aiosqlite
+- **数据库**：PostgreSQL + JSONB + PGVector
 - **文档处理**：python-docx, PyPDF2
 - **向量服务**：OpenAI 兼容 API
 - **环境管理**：python-dotenv

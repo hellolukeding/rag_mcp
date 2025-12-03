@@ -53,14 +53,6 @@ async def create_vectorize_task(request: VectorizeTaskRequest):
         # 获取向量化服务实例
         vectorize_service = get_vectorize_instance()
 
-        # 检查文件是否存在
-        full_path = Path(request.file_path)
-        if not full_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"文件不存在: {request.file_path}"
-            )
-
         # 初始化数据库并获取文件信息
         await db_manager.init_database()
         file_info = await db_manager.get_file_by_id(request.file_id)

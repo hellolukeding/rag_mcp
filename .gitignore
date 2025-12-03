@@ -169,3 +169,9 @@ cache/
 
 # Poetry 虚拟环境（如果使用本地模式）
 .venv/
+
+# docker-compose.override.yml
+docker-compose.yml
+
+# docker文件映射
+data/
