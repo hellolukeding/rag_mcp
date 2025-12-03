@@ -14,7 +14,7 @@ export default function DashboardPage() {
                             title="总文件数"
                             value={128}
                             precision={0}
-                            valueStyle={{ color: '#3f8600' }}
+                            styles={{ content: { color: '#3f8600' } }}
                             prefix={<CloudUploadOutlined />}
                             suffix="个"
                         />
@@ -26,7 +26,7 @@ export default function DashboardPage() {
                             title="向量化完成率"
                             value={98.5}
                             precision={1}
-                            valueStyle={{ color: '#cf1322' }}
+                            styles={{ content: { color: '#cf1322' } }}
                             prefix={<ThunderboltOutlined />}
                             suffix="%"
                         />
