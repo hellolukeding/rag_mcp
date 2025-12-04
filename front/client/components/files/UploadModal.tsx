@@ -29,8 +29,9 @@ const UploadModal: React.FC<UploadModalProps> = ({ open, onClose, onSuccess }) =
         try {
             // Upload files sequentially
             for (const file of fileList) {
-                if (file.originFileObj) {
-                    const res = await uploadFile(file.originFileObj);
+                const fileToUpload = file.originFileObj || (file as unknown as File);
+                if (fileToUpload) {
+                    const res = await uploadFile(fileToUpload);
                     if (res.code !== 200 && res.code !== 201) {
                         throw new Error(res.msg || `文件 ${file.name} 上传失败`);
                     }

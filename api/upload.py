@@ -135,11 +135,14 @@ async def upload_file(file: UploadFile = File(...)) -> ApiResponse[FileUploadRes
     支持的文件格式: .docx, .pdf, .md, .markdown
     """
     try:
+        logger.info(f"Received file upload request: {file.filename}")
         # 读取文件内容
         content = await file.read()
+        logger.info(f"Read file content, size: {len(content)}")
 
         # 验证文件类型
         if not validate_file_type(file.filename, content):
+            logger.warning(f"Invalid file type: {file.filename}")
             return ApiResponse(
                 code=400,
                 msg="不支持的文件格式。仅支持 docx, pdf, markdown 文件",
@@ -157,13 +160,16 @@ async def upload_file(file: UploadFile = File(...)) -> ApiResponse[FileUploadRes
         new_filename = f"{file_id}{file_ext}"
 
         # 上传到MinIO
+        logger.info(f"Uploading to MinIO: {new_filename}")
         await minio_storage.upload_file(new_filename, content, file.content_type)
+        logger.info(f"Uploaded to MinIO: {new_filename}")
 
         # 获取文件大小
         file_size = len(content)
 
         # 记录到数据库
         # file_path 字段现在存储 MinIO 中的对象名称
+        logger.info(f"Inserting into DB: {file_id}")
         await db_manager.insert_file(
             file_id=file_id,
             original_name=original_name,
@@ -172,6 +178,7 @@ async def upload_file(file: UploadFile = File(...)) -> ApiResponse[FileUploadRes
             file_type=file_ext,
             file_size=file_size
         )
+        logger.info(f"Inserted into DB: {file_id}")
 
         return ApiResponse(
             code=200,

@@ -44,7 +44,10 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
-    command: server /data --console-address ":9001" --address ":0.0.0.0:9000" --anonymous=false
+    entrypoint: /bin/sh
+    command:
+      - "-c"
+      - 'echo "Root User: $MINIO_ROOT_USER" && echo "Root Password: $MINIO_ROOT_PASSWORD" && /usr/bin/docker-entrypoint.sh server /data --console-address "0.0.0.0:9001" --address "0.0.0.0:9000" --anonymous=false'
     volumes:
       - ./data/minio:/data
     healthcheck:
