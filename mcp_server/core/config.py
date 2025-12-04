@@ -5,6 +5,7 @@ Configuration management for MCP RAG Server
 import os
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 
@@ -40,7 +41,8 @@ class DatabaseConfig:
 
     @property
     def dsn(self) -> str:
-        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+        password = quote_plus(self.password)
+        return f"postgresql://{self.user}:{password}@{self.host}:{self.port}/{self.database}"
 
 
 @dataclass

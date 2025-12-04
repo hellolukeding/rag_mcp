@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime
 from typing import Any, List, Optional, Tuple
+from urllib.parse import quote_plus
 
 import asyncpg
 from pgvector.asyncpg import register_vector
@@ -21,7 +22,8 @@ except ImportError:
 
             @property
             def dsn(self) -> str:
-                return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+                password = quote_plus(self.password)
+                return f"postgresql://{self.user}:{password}@{self.host}:{self.port}/{self.database}"
 
         db = DatabaseConfig()
 

@@ -8,6 +8,7 @@ import {
     MenuUnfoldOutlined
 } from '@ant-design/icons';
 import { Button, Layout, Menu, theme } from 'antd';
+import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import React, { useState } from 'react';
 
@@ -28,8 +29,9 @@ export default function DashboardLayout({
     return (
         <Layout style={{ minHeight: '100vh' }}>
             <Sider trigger={null} collapsible collapsed={collapsed} theme="light" className="border-r border-gray-200">
-                <div className="demo-logo-vertical h-16 flex items-center justify-center border-b border-gray-100">
-                    <b className={`transition-all duration-200 ${collapsed ? 'text-xs' : 'text-xl'}`}>RAG_MCP</b>
+                <div className="demo-logo-vertical h-16 flex items-center justify-center border-b border-gray-100 transition-all duration-200">
+                    <Image src={"/logo.png"} alt="Logo" width={40} height={40} className='' />
+                    <b className={`transition-all duration-200 ${collapsed ? 'hidden' : 'text-xl ml-4'}`}>RAG_MCP</b>
                 </div>
                 <Menu
                     theme="light"

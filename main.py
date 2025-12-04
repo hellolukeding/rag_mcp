@@ -44,6 +44,7 @@ app.add_middleware(
     allow_origins=[
 
         "http://localhost:5173",  # Vite开发服务器
+        "http://localhost:3000",  # Next.js开发服务器
 
         # 生产环境域名可以在这里添加
     ],
