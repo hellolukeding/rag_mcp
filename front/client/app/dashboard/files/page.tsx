@@ -1,9 +1,11 @@
 "use client";
 
 import FileTable from "@/components/files/FileTable";
+import TaskDrawer from "@/components/files/TaskDrawer";
 import UploadModal from "@/components/files/UploadModal";
 import { deleteFile, FileInfo, getFiles } from "@/services/file";
-import { CloudUploadOutlined, ReloadOutlined } from "@ant-design/icons";
+import { createVectorizeTask } from "@/services/vectorize";
+import { CloudUploadOutlined, ReloadOutlined, UnorderedListOutlined } from "@ant-design/icons";
 import { App, Button } from "antd";
 import { useEffect, useState } from "react";
 
@@ -12,9 +14,9 @@ export default function FilesPage() {
     const [files, setFiles] = useState<FileInfo[]>([]);
     const [loading, setLoading] = useState(false);
     const [uploadModalOpen, setUploadModalOpen] = useState(false);
+    const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
 
-    const fetchFiles = async () => {
-        setLoading(true);
+    const fetchFilesData = async () => {
         try {
             const res = await getFiles();
             if (res.code === 200) {
@@ -25,9 +27,13 @@ export default function FilesPage() {
         } catch (error) {
             message.error("网络错误，无法获取文件列表");
             console.error(error);
-        } finally {
-            setLoading(false);
         }
+    };
+
+    const refreshFiles = async () => {
+        setLoading(true);
+        await fetchFilesData();
+        setLoading(false);
     };
 
     const handleDelete = async (fileId: string) => {
@@ -35,7 +41,7 @@ export default function FilesPage() {
             const res = await deleteFile(fileId);
             if (res.code === 200) {
                 message.success("文件删除成功");
-                fetchFiles(); // Refresh list
+                refreshFiles(); // Refresh list
             } else {
                 message.error(res.msg || "删除失败");
             }
@@ -45,8 +51,28 @@ export default function FilesPage() {
         }
     };
 
+    const handleVectorize = async (file: FileInfo) => {
+        try {
+            const res = await createVectorizeTask({
+                file_id: file.file_id,
+                file_path: file.file_path
+            });
+
+            if (res.success) {
+                message.success("向量化任务已创建");
+                setTaskDrawerOpen(true); // Open drawer to show progress
+                refreshFiles(); // Refresh status
+            } else {
+                message.error(res.message || "创建任务失败");
+            }
+        } catch (error) {
+            message.error("请求失败");
+            console.error(error);
+        }
+    };
+
     useEffect(() => {
-        fetchFiles();
+        refreshFiles();
     }, []);
 
     return (
@@ -58,8 +84,14 @@ export default function FilesPage() {
                 </div>
                 <div className="space-x-3">
                     <Button
+                        icon={<UnorderedListOutlined />}
+                        onClick={() => setTaskDrawerOpen(true)}
+                    >
+                        任务列表
+                    </Button>
+                    <Button
                         icon={<ReloadOutlined />}
-                        onClick={fetchFiles}
+                        onClick={refreshFiles}
                         loading={loading}
                     >
                         刷新
@@ -79,12 +111,19 @@ export default function FilesPage() {
                 files={files}
                 loading={loading}
                 onDelete={handleDelete}
+                onVectorize={handleVectorize}
             />
 
             <UploadModal
                 open={uploadModalOpen}
                 onClose={() => setUploadModalOpen(false)}
-                onSuccess={fetchFiles}
+                onSuccess={refreshFiles}
+            />
+
+            <TaskDrawer
+                open={taskDrawerOpen}
+                onClose={() => setTaskDrawerOpen(false)}
+                onTaskUpdate={fetchFilesData}
             />
         </div>
     );

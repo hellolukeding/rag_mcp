@@ -86,7 +86,7 @@ class RAGHandler:
                 document = await self.db_manager.get_document(chunk['document_id'])
 
                 result = {
-                    "chunk_id": chunk['id'],
+                    "chunk_id": chunk['chunk_id'],
                     "document_id": chunk['document_id'],
                     "document_name": document.get('filename', 'Unknown') if document else 'Unknown',
                     "content": chunk['content'],

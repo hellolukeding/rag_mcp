@@ -35,7 +35,7 @@ export default function DashboardPage() {
                 <Col xs={24} sm={8}>
                     <Card variant="borderless" className="shadow-sm hover:shadow-md transition-shadow">
                         <Statistic
-                            title="API 调用次数"
+                            title="MCP 调用次数"
                             value={9342}
                             precision={0}
                             prefix={<ApiOutlined />}

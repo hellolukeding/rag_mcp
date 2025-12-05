@@ -27,7 +27,7 @@ export default function DashboardLayout({
     const pathname = usePathname();
 
     return (
-        <Layout style={{ minHeight: '100vh' }}>
+        <Layout style={{ height: '100vh', overflow: 'hidden' }}>
             <Sider trigger={null} collapsible collapsed={collapsed} theme="light" className="border-r border-gray-200">
                 <div className="demo-logo-vertical h-16 flex items-center justify-center border-b border-gray-100 transition-all duration-200">
                     <Image src={"/logo.png"} alt="Logo" width={40} height={40} className='' />
@@ -59,7 +59,7 @@ export default function DashboardLayout({
                     ]}
                 />
             </Sider>
-            <Layout>
+            <Layout style={{ display: 'flex', flexDirection: 'column' }}>
                 <Header style={{ padding: 0, background: colorBgContainer }} className="flex items-center justify-between px-4 border-b border-gray-200">
                     <Button
                         type="text"
@@ -83,6 +83,8 @@ export default function DashboardLayout({
                         minHeight: 280,
                         background: colorBgContainer,
                         borderRadius: borderRadiusLG,
+                        overflowY: 'auto',
+                        flex: 1,
                     }}
                 >
                     {children}

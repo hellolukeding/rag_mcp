@@ -25,7 +25,8 @@ class EmbeddingService:
 
             data = {
                 "model": self.model_name,
-                "input": texts
+                "input": texts,
+                "encoding_format": "float"
             }
 
             response = await client.post(

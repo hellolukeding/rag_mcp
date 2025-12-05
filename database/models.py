@@ -69,17 +69,30 @@ class DatabaseManager:
             """)
 
             # Create document_chunks table with vector support
-            # Using 1536 dimensions for OpenAI text-embedding-ada-002
+            # Using 4096 dimensions for Qwen/Qwen3-Embedding-8B (was 1536 for OpenAI)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS document_chunks (
                     id SERIAL PRIMARY KEY,
                     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
                     chunk_index INTEGER NOT NULL,
                     content TEXT NOT NULL,
-                    embedding vector(1536),
+                    embedding vector(4096),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # Drop existing HNSW index if it exists (to allow dimension change and because HNSW limit is 2000)
+            try:
+                await conn.execute("DROP INDEX IF EXISTS idx_document_chunks_embedding")
+            except Exception as e:
+                print(f"Warning: Could not drop index: {e}")
+
+            # Attempt to migrate existing table to 4096 dimensions if needed
+            try:
+                await conn.execute("ALTER TABLE document_chunks ALTER COLUMN embedding TYPE vector(4096)")
+            except Exception as e:
+                print(
+                    f"Warning: Could not alter embedding column dimension: {e}")
 
             # Create index for document_id
             await conn.execute("""
@@ -87,14 +100,12 @@ class DatabaseManager:
                 ON document_chunks(document_id)
             """)
 
-            # Create HNSW index for vector search
+            # Skip vector index creation for now as 4096 dimensions exceeds pgvector limits for HNSW (2000) and IVFFlat (2000 in some versions)
+            # We will rely on exact nearest neighbor search which is slower but works
             try:
-                await conn.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding 
-                    ON document_chunks USING hnsw (embedding vector_cosine_ops)
-                """)
+                await conn.execute("DROP INDEX IF EXISTS idx_document_chunks_embedding")
             except Exception as e:
-                print(f"Warning: Could not create vector index: {e}")
+                print(f"Warning: Could not drop index: {e}")
 
             # Create files table
             await conn.execute("""

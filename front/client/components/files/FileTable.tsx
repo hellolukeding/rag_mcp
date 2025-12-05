@@ -2,7 +2,7 @@
 
 import { formatBytes } from "@/lib/utils";
 import { FileInfo } from "@/services/file";
-import { DeleteOutlined, FileMarkdownOutlined, FilePdfOutlined, FileTextOutlined, FileWordOutlined } from "@ant-design/icons";
+import { DeleteOutlined, FileMarkdownOutlined, FilePdfOutlined, FileTextOutlined, FileWordOutlined, RocketOutlined } from "@ant-design/icons";
 import { Badge, Button, Popconfirm, Table, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 
@@ -10,6 +10,7 @@ interface FileTableProps {
     files: FileInfo[];
     loading: boolean;
     onDelete: (fileId: string) => void;
+    onVectorize: (file: FileInfo) => void;
 }
 
 const getFileIcon = (fileType: string) => {
@@ -39,7 +40,7 @@ const getStatusBadge = (status: string) => {
     }
 };
 
-const FileTable: React.FC<FileTableProps> = ({ files, loading, onDelete }) => {
+const FileTable: React.FC<FileTableProps> = ({ files, loading, onDelete, onVectorize }) => {
     const columns: ColumnsType<FileInfo> = [
         {
             title: '类型',
@@ -79,21 +80,32 @@ const FileTable: React.FC<FileTableProps> = ({ files, loading, onDelete }) => {
         {
             title: '操作',
             key: 'action',
-            width: 100,
+            width: 150,
             align: 'center',
             render: (_, record) => (
-                <Popconfirm
-                    title="确定要删除这个文件吗？"
-                    description="删除后无法恢复，且相关的向量数据也会被清除。"
-                    onConfirm={() => onDelete(record.file_id)}
-                    okText="确定"
-                    cancelText="取消"
-                    okButtonProps={{ danger: true }}
-                >
-                    <Tooltip title="删除文件">
-                        <Button type="text" danger icon={<DeleteOutlined />} />
+                <div className="space-x-2">
+                    <Tooltip title={record.vectorized_status === 'completed' ? "重新向量化" : "开始向量化"}>
+                        <Button
+                            type="text"
+                            icon={<RocketOutlined />}
+                            className={record.vectorized_status === 'completed' ? "text-green-600" : "text-blue-600"}
+                            onClick={() => onVectorize(record)}
+                            disabled={record.vectorized_status === 'processing'}
+                        />
                     </Tooltip>
-                </Popconfirm>
+                    <Popconfirm
+                        title="确定要删除这个文件吗？"
+                        description="删除后无法恢复，且相关的向量数据也会被清除。"
+                        onConfirm={() => onDelete(record.file_id)}
+                        okText="确定"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                    >
+                        <Tooltip title="删除文件">
+                            <Button type="text" danger icon={<DeleteOutlined />} />
+                        </Tooltip>
+                    </Popconfirm>
+                </div>
             ),
         },
     ];

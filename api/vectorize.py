@@ -58,6 +58,7 @@ async def create_vectorize_task(request: VectorizeTaskRequest):
         file_info = await db_manager.get_file_by_id(request.file_id)
 
         if not file_info:
+            logger.error(f"创建向量化任务失败: 数据库中未找到文件记录 {request.file_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"数据库中未找到文件记录: {request.file_id}"
@@ -167,6 +168,7 @@ async def get_all_tasks():
         vectorize_service = get_vectorize_instance()
         all_tasks = vectorize_service.get_all_tasks()
 
+        # all_tasks is already a list of dicts
         return TaskStatusResponse(
             success=True,
             message=f"获取任务列表成功，共 {len(all_tasks)} 个任务",

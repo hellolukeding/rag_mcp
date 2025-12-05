@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.search import router as search_router
 from api.upload import router as upload_router
 from api.vectorize import router as task_vectorize_router
 from core.vectorize import get_vectorize_instance
@@ -64,6 +65,7 @@ app.add_middleware(
 # 注册路由
 app.include_router(upload_router, prefix="/api/v1", tags=["upload"])
 app.include_router(task_vectorize_router, prefix="/api/v1", tags=["vectorize"])
+app.include_router(search_router, prefix="/api/v1", tags=["search"])
 
 
 @app.get("/")
