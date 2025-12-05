@@ -3,15 +3,25 @@
 简化的向量化状态测试 - 专注于API响应
 """
 
-from utils.logger import logger
-from database.models import DatabaseManager
-from api.upload import list_files
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from api.upload import list_files
+from database.models import DatabaseManager
+from utils.logger import logger
 
 # 添加项目根目录到Python路径
 sys.path.append(str(Path(__file__).parent.parent))
+
+
+class MockMinioObject:
+    def __init__(self, object_name, size=1000, last_modified=None):
+        self.object_name = object_name
+        self.size = size
+        self.last_modified = last_modified or datetime.now()
 
 
 async def test_api_status_response():
@@ -51,44 +61,54 @@ async def test_api_status_response():
         # 2. 测试API响应
         logger.info("\n🔍 测试API响应格式...")
 
-        # 调用文件列表API
-        api_response = await list_files()
+        # Mock MinIO storage
+        with patch('api.upload.minio_storage') as mock_storage:
+            # 创建Mock对象列表，对应数据库中的文件
+            mock_objects = [
+                MockMinioObject(f"{status}_test.md")
+                for _, status in test_files
+            ]
+            mock_storage.list_files.return_value = mock_objects
 
-        if api_response.code == 200:
-            logger.info("✅ API调用成功")
+            # 调用文件列表API
+            api_response = await list_files()
 
-            files = api_response.data.files
-            logger.info(f"📊 返回文件数量: {len(files)}")
+            if api_response.code == 200:
+                logger.info("✅ API调用成功")
 
-            # 验证各种状态
-            status_counts = {}
-            for file in files:
-                status = file.vectorized_status
-                status_counts[status] = status_counts.get(status, 0) + 1
+                files = api_response.data.files
+                logger.info(f"📊 返回文件数量: {len(files)}")
 
-                if file.file_id in [f[0] for f in test_files]:
-                    expected_status = next(
-                        f[1] for f in test_files if f[0] == file.file_id)
-                    if status == expected_status:
-                        logger.info(f"✅ {file.file_id} 状态正确: {status}")
+                # 验证各种状态
+                status_counts = {}
+                for file in files:
+                    status = file.vectorized_status
+                    status_counts[status] = status_counts.get(status, 0) + 1
+
+                    if file.file_id in [f[0] for f in test_files]:
+                        expected_status = next(
+                            f[1] for f in test_files if f[0] == file.file_id)
+                        if status == expected_status:
+                            logger.info(f"✅ {file.file_id} 状态正确: {status}")
+                        else:
+                            logger.error(
+                                f"❌ {file.file_id} 状态错误: 期望 {expected_status}, 实际 {status}")
+
+                logger.info(f"\n📈 状态分布统计:")
+                for status, count in status_counts.items():
+                    logger.info(f"  {status}: {count} 个文件")
+
+                # 验证状态枚举
+                valid_statuses = ["pending",
+                                  "processing", "completed", "failed"]
+                for status in status_counts.keys():
+                    if status in valid_statuses:
+                        logger.info(f"✅ 状态 '{status}' 有效")
                     else:
-                        logger.error(
-                            f"❌ {file.file_id} 状态错误: 期望 {expected_status}, 实际 {status}")
+                        logger.error(f"❌ 状态 '{status}' 无效")
 
-            logger.info(f"\n📈 状态分布统计:")
-            for status, count in status_counts.items():
-                logger.info(f"  {status}: {count} 个文件")
-
-            # 验证状态枚举
-            valid_statuses = ["pending", "processing", "completed", "failed"]
-            for status in status_counts.keys():
-                if status in valid_statuses:
-                    logger.info(f"✅ 状态 '{status}' 有效")
-                else:
-                    logger.error(f"❌ 状态 '{status}' 无效")
-
-        else:
-            logger.error(f"❌ API调用失败: {api_response.msg}")
+            else:
+                logger.error(f"❌ API调用失败: {api_response.msg}")
 
         # 3. 测试单个文件API
         logger.info("\n🔍 测试单个文件API...")

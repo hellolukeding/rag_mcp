@@ -1,11 +1,12 @@
 import io
 import os
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # PDF和DOCX处理库
 try:
@@ -253,6 +254,70 @@ async def get_file_content(file_id: str) -> ApiResponse[FileContentResponse]:
         )
 
 
+@router.get("/files/{file_id}/download", status_code=status.HTTP_200_OK,
+            responses={
+                200: {
+                    "description": "文件下载流",
+                    "content": {
+                        "application/octet-stream": {
+                            "schema": {
+                                "type": "string",
+                                "format": "binary"
+                            }
+                        }
+                    }
+                },
+                404: {"description": "文件不存在"}
+            })
+async def download_file(file_id: str):
+    """
+    下载文件
+
+    返回文件流，浏览器会自动触发下载
+    """
+    try:
+        file_info = await db_manager.get_file_by_id(file_id)
+        if not file_info:
+            return ApiResponse(
+                code=404,
+                msg="文件不存在",
+                data=None
+            )
+
+        file_name = file_info["file_name"]
+        original_name = file_info["original_name"]
+
+        # 获取文件流
+        try:
+            file_object = minio_storage.get_file_object(file_name)
+        except Exception as e:
+            logger.error(f"从MinIO获取文件流失败: {e}")
+            return ApiResponse(
+                code=404,
+                msg="文件获取失败",
+                data=None
+            )
+
+        # URL编码文件名
+        encoded_filename = urllib.parse.quote(original_name)
+
+        # 使用StreamingResponse返回文件流
+        return StreamingResponse(
+            file_object,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+
+    except Exception as e:
+        logger.error(f"下载文件失败: {e}")
+        return ApiResponse(
+            code=500,
+            msg=f"下载文件失败: {str(e)}",
+            data=None
+        )
+
+
 @router.delete("/files/{file_id}", status_code=status.HTTP_200_OK)
 async def delete_file(file_id: str) -> ApiResponse[None]:
     """
@@ -307,22 +372,54 @@ async def delete_file(file_id: str) -> ApiResponse[None]:
 async def list_files() -> ApiResponse[FileListResponse]:
     """
     列出所有上传的文件
+    直接从MinIO获取文件列表，并补充数据库中的元数据
     """
     try:
-        files = await db_manager.get_all_files()
-        file_list = [
-            FileInfoResponse(
-                file_id=file["file_id"],
-                original_name=file["original_name"],
-                file_name=file["file_name"],
-                file_path=file["file_path"],
-                file_type=file["file_type"],
-                file_size=file["file_size"],
-                created_at=file["created_at"],
-                vectorized_status=file.get("vectorized", "pending"),
-                vectorized_at=file.get("vectorized_at")
-            ) for file in files
-        ]
+        # 1. 获取MinIO中的所有文件
+        minio_objects = minio_storage.list_files()
+
+        # 2. 获取数据库中的所有文件记录
+        db_files = await db_manager.get_all_files()
+        # 创建文件名到文件记录的映射
+        db_files_map = {f["file_name"]: f for f in db_files}
+
+        file_list = []
+        for obj in minio_objects:
+            file_name = obj.object_name
+
+            # 尝试从数据库记录中获取信息
+            if file_name in db_files_map:
+                file_info = db_files_map[file_name]
+                file_list.append(FileInfoResponse(
+                    file_id=file_info["file_id"],
+                    original_name=file_info["original_name"],
+                    file_name=file_info["file_name"],
+                    file_path=file_info["file_path"],
+                    file_type=file_info["file_type"],
+                    file_size=file_info["file_size"],
+                    created_at=str(file_info["created_at"]),
+                    vectorized_status=file_info.get("vectorized", "pending"),
+                    vectorized_at=str(file_info["vectorized_at"]) if file_info.get(
+                        "vectorized_at") else None
+                ))
+            else:
+                # 如果数据库中没有记录（可能是直接上传到MinIO的文件）
+                # 尝试从文件名解析信息
+                file_ext = Path(file_name).suffix.lower()
+                # 假设文件名就是 file_id + ext
+                file_id = Path(file_name).stem
+
+                file_list.append(FileInfoResponse(
+                    file_id=file_id,
+                    original_name=file_name,  # 无法获取原始文件名，使用对象名
+                    file_name=file_name,
+                    file_path=file_name,
+                    file_type=file_ext,
+                    file_size=obj.size,
+                    created_at=str(obj.last_modified),
+                    vectorized_status="unknown",  # 状态未知
+                    vectorized_at=None
+                ))
 
         return ApiResponse(
             code=200,
@@ -334,6 +431,7 @@ async def list_files() -> ApiResponse[FileListResponse]:
         )
 
     except Exception as e:
+        logger.error(f"获取文件列表失败: {e}")
         return ApiResponse(
             code=500,
             msg=f"获取文件列表失败: {str(e)}",

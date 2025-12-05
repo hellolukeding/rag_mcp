@@ -62,6 +62,22 @@ class MinioStorage:
             logger.error(f"Error uploading file to MinIO: {e}")
             raise
 
+    def get_file_object(self, file_name: str):
+        """
+        Get file object from MinIO for streaming.
+
+        Args:
+            file_name: The name of the file in the bucket.
+
+        Returns:
+            The response object (streamable).
+        """
+        try:
+            return self.client.get_object(self.bucket_name, file_name)
+        except S3Error as e:
+            logger.error(f"Error getting file object from MinIO: {e}")
+            raise
+
     async def get_file_content(self, file_name: str) -> bytes:
         """
         Get file content from MinIO.
@@ -95,6 +111,20 @@ class MinioStorage:
             logger.info(f"Deleted file from MinIO: {file_name}")
         except S3Error as e:
             logger.error(f"Error deleting file from MinIO: {e}")
+            raise
+
+    def list_files(self):
+        """
+        List all files in the bucket.
+
+        Returns:
+            List of MinIO objects.
+        """
+        try:
+            # list_objects returns an iterator, convert to list
+            return list(self.client.list_objects(self.bucket_name))
+        except S3Error as e:
+            logger.error(f"Error listing files from MinIO: {e}")
             raise
 
     def get_presigned_url(self, file_name: str, expires_hours: int = 1) -> str:
