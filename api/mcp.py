@@ -4,8 +4,9 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import aiofiles
 from fastapi import APIRouter, HTTPException, status
@@ -182,3 +183,51 @@ async def get_logs():
         return {"logs": ""}
     text = LOG_FILE.read_text(errors="ignore")
     return {"logs": text}
+
+
+@router.get("/mcp/calls")
+async def get_mcp_call_count(minutes: Optional[int] = None, tool: Optional[str] = None):
+    """Return the number of MCP tool calls recorded in the MCP server log.
+
+    Optional query params:
+    - `minutes`: only count calls in the last N minutes
+    - `tool`: filter by tool name (e.g. `rag_search`)
+    """
+    if not LOG_FILE.exists():
+        return {"count": 0, "minutes": minutes, "tool": tool}
+
+    count = 0
+    cutoff = None
+    now = datetime.now()
+    if minutes is not None:
+        cutoff = now - timedelta(minutes=int(minutes))
+
+    # Log timestamps are like: "2025-12-10 19:36:17,292 - mcp-rag-server - INFO - ..."
+    ts_format = "%Y-%m-%d %H:%M:%S,%f"
+
+    try:
+        with LOG_FILE.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if "Handling tool call:" not in line:
+                    continue
+
+                if tool:
+                    # log line contains: Handling tool call: <name> with arguments
+                    if f"Handling tool call: {tool}" not in line:
+                        continue
+
+                if cutoff is not None:
+                    try:
+                        ts_str = line.split(" - ")[0].strip()
+                        ts = datetime.strptime(ts_str, ts_format)
+                        if ts >= cutoff:
+                            count += 1
+                    except Exception:
+                        # if parsing fails, still count the entry to be conservative
+                        count += 1
+                else:
+                    count += 1
+    except Exception:
+        return {"count": 0, "minutes": minutes, "tool": tool}
+
+    return {"count": count, "minutes": minutes, "tool": tool}

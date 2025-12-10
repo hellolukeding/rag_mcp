@@ -4,11 +4,14 @@ import { GravityUiLogoMcp } from '@/components/icons';
 import {
     DashboardOutlined,
     DatabaseOutlined,
+    DownOutlined,
     FileTextOutlined,
+    LogoutOutlined,
     MenuFoldOutlined,
-    MenuUnfoldOutlined
+    MenuUnfoldOutlined,
+    UserOutlined
 } from '@ant-design/icons';
-import { Button, Layout, Menu, theme } from 'antd';
+import { Button, Dropdown, Layout, Menu, theme } from 'antd';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import React, { useState } from 'react';
@@ -78,8 +81,36 @@ export default function DashboardLayout({
                         }}
                     />
                     <div className="mr-4">
-                        {/* User profile or other header items can go here */}
-                        <span>Admin</span>
+                        <Dropdown
+                            menu={{
+                                items: [
+                                    {
+                                        key: 'profile',
+                                        icon: <UserOutlined />,
+                                        label: '个人信息',
+                                    },
+                                    {
+                                        type: 'divider',
+                                    },
+                                    {
+                                        key: 'logout',
+                                        icon: <LogoutOutlined />,
+                                        label: '退出登录',
+                                        onClick: () => {
+                                            if (typeof window !== 'undefined') {
+                                                localStorage.removeItem('access_token');
+                                                router.push('/login');
+                                            }
+                                        },
+                                    },
+                                ],
+                            }}
+                            placement="bottomRight"
+                        >
+                            <Button type="text" icon={<UserOutlined />} className="flex items-center">
+                                Admin <DownOutlined style={{ fontSize: 12, marginLeft: 4 }} />
+                            </Button>
+                        </Dropdown>
                     </div>
                 </Header>
                 <Content

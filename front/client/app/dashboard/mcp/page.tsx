@@ -3,8 +3,10 @@
 import { SolarRefreshOutline } from '@/components/icons';
 import { getMcpLogs, getMcpStatus, startMcpServer, stopMcpServer, streamMcpLogs } from '@/services/mcp';
 import { ClearOutlined, DownloadOutlined, PoweroffOutlined, StopOutlined } from '@ant-design/icons';
-import { Alert, Badge, Button, Card, Space, Switch, Tag, Tooltip } from 'antd';
+import { Alert, Badge, Button, Card, Col, Divider, Row, Space, Switch, Tag, Tooltip, Typography } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
+
+const { Title, Text } = Typography;
 
 export default function McpManagementPage() {
     const [status, setStatus] = useState<{ running: boolean; pid?: number | null; uptime_seconds?: number | null }>({ running: false, pid: null, uptime_seconds: null });
@@ -272,84 +274,165 @@ export default function McpManagementPage() {
     };
 
     return (
-        <div>
-            <h2 className="text-2xl font-bold mb-6 text-gray-800">MCP 管理</h2>
+        <div className="p-4">
+            <Title level={2} className="mb-6 text-gray-800">MCP 管理</Title>
+            
             {error && (
                 <Alert
-                    title="错误"
+                    message="错误"
                     description={error}
                     type="error"
                     showIcon
                     closable
                     onClose={() => setError(null)}
-                    className="mb-4"
+                    className="mb-6"
                 />
             )}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <Card>
-                    <Space orientation="vertical">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <div className="text-sm text-gray-500">MCP 状态</div>
-                                <div className="mt-1 font-semibold flex items-center gap-2">
-                                    <Badge dot status={status.running ? 'success' : 'default'} />
-                                    {status.running ? (
-                                        <div className="flex items-center gap-2">
-                                            <div>Running</div>
-                                            <Tag color="green">PID: {status.pid}</Tag>
-                                        </div>
-                                    ) : (
-                                        <Tag color="red">Stopped</Tag>
-                                    )}
+
+            <Row gutter={[16, 16]}>
+                {/* 状态卡片 */}
+                <Col xs={24} lg={8}>
+                    <Card title="服务状态" className="h-full">
+                        <div className="flex flex-col h-full">
+                            <div className="flex-grow">
+                                <div className="flex items-center justify-between mb-4">
+                                    <Text strong>当前状态:</Text>
+                                    <Badge status={status.running ? 'success' : 'default'} text={status.running ? '运行中' : '已停止'} />
                                 </div>
-                                <div className="text-xs text-gray-400 mt-1">{lastUpdated ? `上次检查: ${lastUpdated.toLocaleTimeString()}` : ''}</div>
-                                {status.uptime_seconds !== undefined && status.uptime_seconds !== null && (
-                                    <div className="text-xs text-gray-400">已运行: {formatUptime(status.uptime_seconds)}</div>
-                                )}
-                            </div>
-                            <div className="space-x-2">
-                                <Tooltip title="刷新状态">
-                                    <Button icon={<SolarRefreshOutline />} loading={refreshing} onClick={onRefreshStatus} />
-                                </Tooltip>
-                                {!status.running ? (
-                                    <Tooltip title="启动 MCP">
-                                        <Button type="primary" icon={<PoweroffOutlined />} loading={loadingStart} onClick={onStart} disabled={status.running}>
-                                            启动
-                                        </Button>
-                                    </Tooltip>
+
+                                {status.running ? (
+                                    <>
+                                        <div className="mb-2">
+                                            <Text type="secondary">进程ID:</Text>
+                                            <Tag color="green" className="ml-2">{status.pid}</Tag>
+                                        </div>
+                                        <div className="mb-2">
+                                            <Text type="secondary">运行时间:</Text>
+                                            <Text className="ml-2">{formatUptime(status.uptime_seconds)}</Text>
+                                        </div>
+                                    </>
                                 ) : (
-                                    <Tooltip title="停止 MCP">
-                                        <Button danger icon={<StopOutlined />} loading={loadingStop} onClick={onStop} disabled={!status.running}>
-                                            停止
-                                        </Button>
-                                    </Tooltip>
+                                    <Text type="secondary">服务当前未运行</Text>
+                                )}
+
+                                <div className="mt-4">
+                                    <Text type="secondary">最后更新:</Text>
+                                    <Text className="ml-2">{lastUpdated ? lastUpdated.toLocaleTimeString() : '--'}</Text>
+                                </div>
+                            </div>
+
+                            <div className="flex space-x-2 mt-4">
+                                <Tooltip title="刷新状态">
+                                    <Button 
+                                        icon={<SolarRefreshOutline />} 
+                                        loading={refreshing} 
+                                        onClick={onRefreshStatus}
+                                    />
+                                </Tooltip>
+                                
+                                {!status.running ? (
+                                    <Button 
+                                        type="primary" 
+                                        icon={<PoweroffOutlined />} 
+                                        loading={loadingStart} 
+                                        onClick={onStart}
+                                        className="flex-grow"
+                                    >
+                                        启动服务
+                                    </Button>
+                                ) : (
+                                    <Button 
+                                        danger 
+                                        icon={<StopOutlined />} 
+                                        loading={loadingStop} 
+                                        onClick={onStop}
+                                        className="flex-grow"
+                                    >
+                                        停止服务
+                                    </Button>
                                 )}
                             </div>
                         </div>
-                    </Space>
-                </Card>
+                    </Card>
+                </Col>
 
-                <Card title="MCP 日志" className="md:col-span-2" extra={<Space>
-                    <Tag color={logsConnected ? 'green' : logsConnecting ? 'gold' : isPolling ? 'blue' : 'red'}>
-                        {logsConnected ? '实时 (SSE)' : logsConnecting ? '连接中...' : isPolling ? '轮询' : '已断开'}
-                    </Tag>
-                    <Button size="small" onClick={async () => { setError(null); setLogSseAttempts(0); stopPolling(); await connectToLogs(0); }}>重连</Button>
-                    <Tooltip title="自动滚动">
-                        <Switch checked={autoScroll} onChange={(v) => setAutoScroll(v)} size="small" />
-                    </Tooltip>
-                    <Button size="small" icon={<ClearOutlined />} onClick={onClearLogs}>清空</Button>
-                    <Button size="small" icon={<DownloadOutlined />} onClick={onDownloadLogs}>下载</Button>
-                </Space>}>
-                    <div ref={logContainerRef} className="h-96 overflow-auto bg-black text-white p-3 font-mono rounded-md">
-                        {logs.length === 0 && <div className="text-gray-400">无日志</div>}
-                        {logs.map((line, idx) => (
-                            <div key={idx} className="leading-tight text-xs wrap-break-word">
-                                <span className="text-gray-500">[{new Date().toLocaleTimeString()}]</span> {line}
+                {/* 连接说明卡片 */}
+                <Col xs={24} lg={16}>
+                    <Card title="客户端连接说明" className="h-full">
+                        <div className="h-full flex flex-col">
+                            <div className="flex-grow">
+                                <Text type="secondary">
+                                    当 MCP 服务已启动时，LLM 客户端可以直接通过 MCP 协议调用已注册的工具。
+                                </Text>
+                                
+                                <Divider orientation="start" plain>连接步骤</Divider>
+                                <ol className="list-decimal list-inside space-y-2 mb-4">
+                                    <li>确保后端 MCP 已启动（状态显示为运行中）</li>
+                                    <li>在你的应用中配置 MCP 客户端连接参数</li>
+                                    <li>使用支持 MCP 协议的 LLM 客户端库进行连接</li>
+                                </ol>
+
+                                <Divider orientation="start" plain>JSON 配置示例 (SSE方式)</Divider>
+                                <div className="bg-gray-900 text-white rounded-md p-3 text-xs overflow-auto">
+                                    <pre className="whitespace-pre-wrap"><code>{`{
+  "servers": {
+    "rag-mcp": {
+      "type": "sse",
+      "url": "http://localhost:8000/api/v1/mcp/sse"
+    }
+  },
+  "inputs": []
+}`}</code></pre>
+                                </div>
+                                <div className="mt-3 text-xs text-gray-500">
+                                    说明: 此配置适用于通过SSE方式连接到RAG-MCP服务器。你需要将此配置集成到你的MCP客户端应用中。
+                                    注意：SSE连接需要先通过API启动MCP服务器（点击上方"启动服务"按钮）。
+                                </div>
                             </div>
-                        ))}
-                    </div>
-                </Card>
-            </div>
+                            
+                            <div className="mt-4 text-xs text-gray-500">
+                                说明: 上例使用仓库内的 mcp.simple_mcp_server.MCPServer 封装来方便本地调用；
+                                在生产中，你的 LLM 客户端可以通过相同的 MCP 协议构造 JSON-RPC 请求并与 MCP 服务器通信（stdio 或 socket，视服务器启动方式而定）。
+                            </div>
+                        </div>
+                    </Card>
+                </Col>
+
+                {/* 日志面板 */}
+                <Col span={24}>
+                    <Card 
+                        title="MCP 日志" 
+                        extra={
+                            <Space>
+                                <Tag color={logsConnected ? 'green' : logsConnecting ? 'gold' : isPolling ? 'blue' : 'red'}>
+                                    {logsConnected ? '实时 (SSE)' : logsConnecting ? '连接中...' : isPolling ? '轮询' : '已断开'}
+                                </Tag>
+                                <Button size="small" onClick={async () => { setError(null); setLogSseAttempts(0); stopPolling(); await connectToLogs(0); }}>
+                                    重连
+                                </Button>
+                                <Tooltip title="自动滚动">
+                                    <Switch checked={autoScroll} onChange={(v) => setAutoScroll(v)} size="small" />
+                                </Tooltip>
+                                <Button size="small" icon={<ClearOutlined />} onClick={onClearLogs}>
+                                    清空
+                                </Button>
+                                <Button size="small" icon={<DownloadOutlined />} onClick={onDownloadLogs}>
+                                    下载
+                                </Button>
+                            </Space>
+                        }
+                    >
+                        <div ref={logContainerRef} className="h-96 overflow-auto bg-black text-white p-3 font-mono rounded-md">
+                            {logs.length === 0 && <div className="text-gray-400">暂无日志信息</div>}
+                            {logs.map((line, idx) => (
+                                <div key={idx} className="leading-tight text-xs wrap-break-word">
+                                    <span className="text-gray-500">[{new Date().toLocaleTimeString()}]</span> {line}
+                                </div>
+                            ))}
+                        </div>
+                    </Card>
+                </Col>
+            </Row>
         </div>
     );
 }

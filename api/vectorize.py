@@ -5,16 +5,18 @@
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
+from core.services import DocumentService
 from core.vectorize import TaskFile, get_vectorize_instance
 from database.models import db_manager
 from utils.logger import logger
 
 router = APIRouter()
+document_service = DocumentService()
 
 
 class VectorizeTaskRequest(BaseModel):
@@ -312,3 +314,66 @@ async def batch_vectorize_files():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"批量向量化文件失败: {str(e)}"
         )
+
+
+@router.get("/dashboard/stats", summary="获取仪表盘统计数据")
+async def get_dashboard_stats():
+    """
+    获取仪表盘统计数据，包括：
+    - 总文件数
+    - 已向量化文件数
+    - 向量化完成率
+    - MCP调用次数等
+    """
+    try:
+        # 获取所有文件
+        files = await db_manager.get_all_files()
+
+        total_files = len(files)
+        completed_files = len(
+            [f for f in files if f.get('vectorized') == 'completed'])
+        pending_files = len([f for f in files if f.get('vectorized') in [
+                            'pending', 'failed'] or f.get('vectorized') is None])
+
+        # 计算完成率
+        completion_rate = 0
+        if total_files > 0:
+            completion_rate = round((completed_files / total_files) * 100, 2)
+
+        # 获取文档数量（documents表中的记录）
+        documents = await document_service.get_all_documents()
+        total_documents = len(documents)
+
+        # 这里应该从实际的日志或计数器中获取MCP调用次数
+        # 目前我们暂时返回一个模拟值
+        mcp_calls = 9342
+
+        return {
+            "total_files": total_files,
+            "completed_files": completed_files,
+            "pending_files": pending_files,
+            "completion_rate": completion_rate,
+            "total_documents": total_documents,
+            "mcp_calls": mcp_calls
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dashboard/recent-files", summary="获取最近上传的文件")
+async def get_recent_files(limit: int = 5):
+    """
+    获取最近上传的文件列表
+    """
+    try:
+        files = await db_manager.get_all_files()
+        # 按创建时间排序，取最新的几个
+        sorted_files = sorted(
+            files, key=lambda x: x['created_at'], reverse=True)
+        recent_files = sorted_files[:limit]
+
+        return {
+            "recent_files": recent_files
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

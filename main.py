@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.auth import router as auth_router
 from api.mcp import router as mcp_router
 from api.search import router as search_router
 from api.upload import router as upload_router
@@ -68,6 +69,7 @@ app.include_router(upload_router, prefix="/api/v1", tags=["upload"])
 app.include_router(task_vectorize_router, prefix="/api/v1", tags=["vectorize"])
 app.include_router(search_router, prefix="/api/v1", tags=["search"])
 app.include_router(mcp_router, prefix="/api/v1", tags=["mcp"])
+app.include_router(auth_router, prefix="/api/v1", tags=["auth"])
 
 
 @app.get("/")

@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import secrets
 from datetime import datetime
 from typing import Any, List, Optional, Tuple
 from urllib.parse import quote_plus
@@ -120,6 +122,48 @@ class DatabaseManager:
                     vectorized TEXT DEFAULT 'pending',
                     vectorized_at TIMESTAMP NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Create users table for authentication
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password_salt TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Seed a default admin user if configured (or fallback to admin/admin)
+            try:
+                default_user = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
+                default_password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin")
+                if default_user and default_password:
+                    existing = await conn.fetchrow("SELECT id FROM users WHERE username = $1", default_user)
+                    if not existing:
+                        salt = secrets.token_hex(8)
+                        pwd_hash = hashlib.pbkdf2_hmac("sha256", default_password.encode(
+                            "utf-8"), salt.encode("utf-8"), 100_000).hex()
+                        await conn.execute(
+                            "INSERT INTO users (username, password_salt, password_hash) VALUES ($1, $2, $3)",
+                            default_user, salt, pwd_hash
+                        )
+                        print(f"Created default admin user: {default_user}")
+            except Exception as e:
+                print(f"Warning: could not create default admin user: {e}")
+
+            # Create behavior captcha sessions table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS behavior_captchas (
+                    id SERIAL PRIMARY KEY,
+                    session_id TEXT UNIQUE NOT NULL,
+                    events JSONB,
+                    verified BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NULL
                 )
             """)
 
@@ -348,6 +392,93 @@ class DatabaseManager:
                 RETURNING id
             """, file_id, original_name, file_name, file_path, file_type, file_size)
             return row['id']
+
+    # --------------------- Auth / Captcha helpers ---------------------
+    async def create_user(self, username: str, password_salt: str, password_hash: str) -> int:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO users (username, password_salt, password_hash)
+                VALUES ($1, $2, $3)
+                RETURNING id
+                """,
+                username, password_salt, password_hash
+            )
+            return row['id']
+
+    async def get_user_by_username(self, username: str) -> Optional[dict]:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM users WHERE username = $1", username)
+            if not row:
+                return None
+            return {
+                'id': row['id'],
+                'username': row['username'],
+                'password_salt': row['password_salt'],
+                'password_hash': row['password_hash'],
+                'is_active': row['is_active'],
+                'created_at': row['created_at']
+            }
+
+    async def insert_behavior_captcha(self, session_id: str, events: Optional[dict], expires_at: Optional[object] = None) -> str:
+        """Insert or update a behavior captcha session.
+
+        `expires_at` may be a datetime or an ISO string; normalize to a datetime
+        before passing to asyncpg so the TIMESTAMP column is encoded correctly.
+        """
+        pool = await self.get_pool()
+        # normalize expires_at to datetime or None
+        expires_dt = None
+        if expires_at is not None:
+            try:
+                from datetime import datetime as _dt
+
+                if isinstance(expires_at, str):
+                    # attempt ISO format parse
+                    try:
+                        expires_dt = _dt.fromisoformat(expires_at)
+                    except Exception:
+                        expires_dt = None
+                elif isinstance(expires_at, _dt):
+                    expires_dt = expires_at
+            except Exception:
+                expires_dt = None
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO behavior_captchas (session_id, events, expires_at)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (session_id) DO UPDATE SET events = EXCLUDED.events, expires_at = EXCLUDED.expires_at
+                """,
+                session_id,
+                json.dumps(events) if events is not None else None,
+                expires_dt
+            )
+            return session_id
+
+    async def get_captcha_by_session(self, session_id: str) -> Optional[dict]:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM behavior_captchas WHERE session_id = $1", session_id)
+            if not row:
+                return None
+            return {
+                'id': str(row['id']),
+                'session_id': row['session_id'],
+                'events': row['events'],
+                'verified': row['verified'],
+                'created_at': row['created_at'],
+                'expires_at': row['expires_at']
+            }
+
+    async def mark_captcha_verified(self, session_id: str) -> bool:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("UPDATE behavior_captchas SET verified = TRUE WHERE session_id = $1", session_id)
+            return int(result.split()[1]) > 0
 
     async def get_file_by_id(self, file_id: str) -> Optional[dict]:
         """根据文件ID获取文件信息"""
