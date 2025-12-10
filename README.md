@@ -189,3 +189,19 @@ curl -X POST "http://localhost:8000/api/v1/vectorize" \
 - **向量服务**：OpenAI 兼容 API
 - **环境管理**：python-dotenv
 - **依赖管理**：Poetry
+
+## MCP 管理页面
+
+- URL: `/dashboard/mcp` (前端)
+- 后端 API 路径: `/api/v1/mcp`
+  - GET `/status` - 检查 MCP 是否正在运行
+  - POST `/start` - 启动 MCP 服务
+  - POST `/stop` - 停止 MCP 服务
+  - GET `/logs` - 获取当前日志
+  - GET `/logs/stream` - 错误流式日志 (SSE)
+
+启动 MCP 的示例命令 (后端):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/mcp/start
+```

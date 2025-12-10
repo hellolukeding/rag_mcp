@@ -1,5 +1,6 @@
 "use client";
 
+import { GravityUiLogoMcp } from '@/components/icons';
 import {
     DashboardOutlined,
     DatabaseOutlined,
@@ -56,6 +57,11 @@ export default function DashboardLayout({
                             icon: <DatabaseOutlined />,
                             label: '知识库',
                         },
+                        {
+                            key: "/dashboard/mcp",
+                            icon: <GravityUiLogoMcp />,
+                            label: "MCP 管理",
+                        }
                     ]}
                 />
             </Sider>

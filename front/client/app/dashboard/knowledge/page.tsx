@@ -2,7 +2,7 @@
 
 import { searchKnowledge, SearchResult } from "@/services/knowledge";
 import { FileTextOutlined } from "@ant-design/icons";
-import { App, Card, Empty, Input, List, Spin, Tag, Typography } from "antd";
+import { App, Card, Empty, Input, Spin, Tag, Typography } from "antd";
 import { useState } from "react";
 
 const { Title, Paragraph, Text } = Typography;
@@ -68,11 +68,9 @@ export default function KnowledgePage() {
                 ) : searched && results.length === 0 ? (
                     <Empty description="未找到相关内容，请尝试其他关键词" />
                 ) : (
-                    <List
-                        grid={{ gutter: 16, column: 1 }}
-                        dataSource={results}
-                        renderItem={(item) => (
-                            <List.Item>
+                    <div className="space-y-4">
+                        {results.map((item, idx) => (
+                            <div key={item.metadata?.chunk_id ?? `${idx}-${item.title?.slice(0, 20) || idx}`}>
                                 <Card
                                     hoverable
                                     className="border-gray-200 shadow-sm hover:shadow-md transition-shadow"
@@ -100,9 +98,9 @@ export default function KnowledgePage() {
                                         <span>Chunk ID: {item.metadata?.chunk_id}</span>
                                     </div>
                                 </Card>
-                            </List.Item>
-                        )}
-                    />
+                            </div>
+                        ))}
+                    </div>
                 )}
             </div>
         </div>
