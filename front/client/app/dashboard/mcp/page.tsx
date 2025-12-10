@@ -4,7 +4,7 @@ import { SolarRefreshOutline } from '@/components/icons';
 import { getMcpLogs, getMcpStatus, startMcpServer, stopMcpServer, streamMcpLogs } from '@/services/mcp';
 import { ClearOutlined, DownloadOutlined, PoweroffOutlined, StopOutlined } from '@ant-design/icons';
 import { Alert, Badge, Button, Card, Space, Switch, Tag, Tooltip } from 'antd';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export default function McpManagementPage() {
     const [status, setStatus] = useState<{ running: boolean; pid?: number | null; uptime_seconds?: number | null }>({ running: false, pid: null, uptime_seconds: null });
@@ -16,7 +16,15 @@ export default function McpManagementPage() {
     const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
     const [refreshing, setRefreshing] = useState(false);
     const esRef = useRef<EventSource | null>(null);
+    const pollingRef = useRef<number | null>(null);
+    const connectingTimerRef = useRef<number | null>(null);
+    const [logsConnecting, setLogsConnecting] = useState(false);
+    const [logsConnected, setLogsConnected] = useState(false);
+    const [logSseAttempts, setLogSseAttempts] = useState(0);
+    const [isPolling, setIsPolling] = useState(false);
+    const unmountedRef = useRef(false);
     const logContainerRef = useRef<HTMLDivElement | null>(null);
+    const connectToLogsRef = useRef<(attempt?: number) => void>(() => { });
 
     useEffect(() => {
         if (!autoScroll || !logContainerRef.current) return;
@@ -50,9 +58,10 @@ export default function McpManagementPage() {
         return () => clearInterval(interval);
     }, []);
 
-    useEffect(() => {
-        let es: EventSource | null = null;
-        const fetchAndStream = async () => {
+    const startPolling = () => {
+        if (pollingRef.current) return;
+        // use window.setInterval to get a number in browser
+        pollingRef.current = window.setInterval(async () => {
             try {
                 const initial = await getMcpLogs();
                 if (initial.data && initial.data.logs) {
@@ -60,29 +69,136 @@ export default function McpManagementPage() {
                     setLogs(lines.slice(-200));
                 }
             } catch (e) {
-                // If logs cannot be fetched, set as empty and show a message
-                console.warn('No logs available or cannot fetch logs', e);
-                setLogs((prev) => prev.concat([`⚠️ 无法获取日志: ${String(e)}`]));
+                console.warn('Polling failed to fetch logs', e);
             }
-            es = streamMcpLogs((line: string) => {
+        }, 3000);
+        setIsPolling(true);
+    };
+
+    const stopPolling = () => {
+        if (pollingRef.current) {
+            window.clearInterval(pollingRef.current);
+            pollingRef.current = null;
+        }
+        setIsPolling(false);
+    };
+
+    const connectToLogs = useCallback(async (attempt = 0) => {
+        if (unmountedRef.current) return;
+        // close existing es if any
+        if (esRef.current) {
+            try { esRef.current.close(); } catch (_) { }
+            esRef.current = null;
+        }
+        setLogsConnecting(true);
+        setLogsConnected(false);
+        setLogSseAttempts(attempt);
+        setError(null);
+
+        // fetch initial logs
+        try {
+            const initial = await getMcpLogs();
+            if (initial.data && initial.data.logs) {
+                const lines = initial.data.logs.split('\n').filter(Boolean);
+                setLogs(lines.slice(-200));
+            }
+        } catch (e) {
+            console.warn('Unable to fetch logs initially', e);
+        }
+
+        try {
+            const es = streamMcpLogs((line: string) => {
                 setLogs((prev) => {
                     const next = prev.slice(-199).concat([line]);
                     return next;
                 });
             });
+            es.onopen = () => {
+                setLogsConnected(true);
+                setLogsConnecting(false);
+                setLogSseAttempts(0);
+                // clear connecting timeout
+                if (connectingTimerRef.current) {
+                    window.clearTimeout(connectingTimerRef.current);
+                    connectingTimerRef.current = null;
+                }
+                stopPolling();
+                // clear error on successful connection
+                setError(null);
+            };
             es.onerror = (err) => {
                 console.warn('EventSource error', err);
+                setLogsConnected(false);
+                setLogsConnecting(false);
+                if (connectingTimerRef.current) {
+                    window.clearTimeout(connectingTimerRef.current);
+                    connectingTimerRef.current = null;
+                }
                 setError('无法打开 SSE 连接以接收日志');
+                try { es.close(); } catch (_) { }
+                // exponential backoff and retry
+                const nextAttempt = attempt + 1;
+                setLogSseAttempts(nextAttempt);
+                if (nextAttempt >= 5) {
+                    // fallback to polling
+                    setError('SSE 连接失败，已切换到轮询以确保日志更新');
+                    startPolling();
+                    return;
+                }
+                const backoff = Math.min(2000 * Math.pow(2, nextAttempt - 1), 30000);
+                setTimeout(() => connectToLogsRef.current(nextAttempt), backoff);
             };
             esRef.current = es;
-        };
-        fetchAndStream();
+            // set a safety timeout: if not open within 8s, fallback to polling
+            if (connectingTimerRef.current) {
+                window.clearTimeout(connectingTimerRef.current);
+                connectingTimerRef.current = null;
+            }
+            connectingTimerRef.current = window.setTimeout(() => {
+                if (!esRef.current) return;
+                console.warn('SSE connection timeout, falling back to polling');
+                try { esRef.current.close(); } catch (_) { }
+                esRef.current = null;
+                setLogsConnecting(false);
+                setError('SSE连接超时，已切换到轮询');
+                startPolling();
+            }, 8000);
+        } catch (err) {
+            console.warn('Failed to create EventSource', err);
+            setLogsConnected(false);
+            setLogsConnecting(false);
+            setError('无法打开 SSE 连接以接收日志');
+            // fallback to polling
+            startPolling();
+        }
+    }, []);
+
+    useEffect(() => {
+        unmountedRef.current = false;
+        const run = async () => { await connectToLogs(); };
+        run();
         return () => {
-            if (es) {
-                es.close();
+            unmountedRef.current = true;
+            try {
+                if (esRef.current) {
+                    esRef.current.close();
+                    esRef.current = null;
+                }
+            } catch (_) { }
+            if (pollingRef.current) {
+                window.clearInterval(pollingRef.current);
+                pollingRef.current = null;
+            }
+            if (connectingTimerRef.current) {
+                window.clearTimeout(connectingTimerRef.current);
+                connectingTimerRef.current = null;
             }
         };
-    }, []);
+    }, [connectToLogs]);
+
+    useEffect(() => {
+        connectToLogsRef.current = connectToLogs;
+    }, [connectToLogs]);
 
     const onStart = async () => {
         setLoadingStart(true);
@@ -160,7 +276,7 @@ export default function McpManagementPage() {
             <h2 className="text-2xl font-bold mb-6 text-gray-800">MCP 管理</h2>
             {error && (
                 <Alert
-                    message="错误"
+                    title="错误"
                     description={error}
                     type="error"
                     showIcon
@@ -214,6 +330,10 @@ export default function McpManagementPage() {
                 </Card>
 
                 <Card title="MCP 日志" className="md:col-span-2" extra={<Space>
+                    <Tag color={logsConnected ? 'green' : logsConnecting ? 'gold' : isPolling ? 'blue' : 'red'}>
+                        {logsConnected ? '实时 (SSE)' : logsConnecting ? '连接中...' : isPolling ? '轮询' : '已断开'}
+                    </Tag>
+                    <Button size="small" onClick={async () => { setError(null); setLogSseAttempts(0); stopPolling(); await connectToLogs(0); }}>重连</Button>
                     <Tooltip title="自动滚动">
                         <Switch checked={autoScroll} onChange={(v) => setAutoScroll(v)} size="small" />
                     </Tooltip>

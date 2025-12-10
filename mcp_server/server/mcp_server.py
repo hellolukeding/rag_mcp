@@ -3,30 +3,47 @@ MCP Server implementation for RAG system using MCP SDK
 Provides document retrieval capabilities via MCP protocol
 """
 
-from mcp_server.core.rag_handler import rag_handler
-from mcp_server.core.config import config
 from mcp.types import TextContent, Tool
 from mcp.server.stdio import stdio_server
 from mcp.server.models import InitializationOptions
 from mcp.server import Server
 from dotenv import load_dotenv
-import asyncio
-import json
+from typing import Any, Dict, List, Optional
+import time
+import threading
+import signal
 import logging
+import json
+import asyncio
 import os
 import sys
-from typing import Any, Dict, List, Optional
 
-# 添加项目根目录到Python路径
+# Re-exec when executed as a script so module imports work consistently.
+if __name__ == "__main__" and (__package__ is None or __package__ == ""):
+    args = [sys.executable, "-m", "mcp_server.server.mcp_server"] + sys.argv[1:]
+    os.execvp(sys.executable, args)
+
+# Ensure project root is on sys.path so local package imports resolve even when
+# running inside different environments or when another top-level module with
+# the same name exists on sys.path.
 project_root = os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, project_root)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+try:
+    from mcp_server.core.config import config
+    from mcp_server.core.rag_handler import rag_handler
+except ModuleNotFoundError as e:
+    # Helpful error when import fails — include sys.path to aid debugging.
+    print("错误: 无法导入 mcp_server 包。请以模块方式运行或确保项目根目录在 PYTHONPATH。")
+    print("当前 sys.path:")
+    for p in sys.path[:10]:
+        print("  ", p)
+    raise
 
 
-# 添加项目根目录到Python路径
-project_root = os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, project_root)
+# (sys.path insertion moved above) Ensure python path is configured before imports.
 
 # 导入MCP相关模块
 
@@ -39,8 +56,50 @@ logger = logging.getLogger("mcp-rag-server")
 
 load_dotenv()
 
+# Ensure server logs are written to `mcp_server/mcp_server.log` in the package
+# directory using a rotating file handler. Make rotation size/backups configurable
+# via environment variables so tests can adjust behavior if needed.
+try:
+    from logging.handlers import RotatingFileHandler
+
+    package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_file_path = os.path.join(package_dir, "mcp_server.log")
+
+    # Configurable via env vars (defaults reasonable for production)
+    max_bytes = int(os.environ.get("MCP_LOG_MAX_BYTES",
+                    str(10 * 1024 * 1024)))  # 10 MB
+    backup_count = int(os.environ.get("MCP_LOG_BACKUP_COUNT", "5"))
+
+    # Only add a RotatingFileHandler if one isn't already present for this path
+    existing = False
+    for h in logger.handlers:
+        try:
+            if isinstance(h, RotatingFileHandler) and os.path.abspath(h.baseFilename) == os.path.abspath(log_file_path):
+                existing = True
+                break
+        except Exception:
+            continue
+
+    if not existing:
+        os.makedirs(package_dir, exist_ok=True)
+        fh = RotatingFileHandler(
+            log_file_path, maxBytes=max_bytes, backupCount=backup_count)
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(fh)
+except Exception:
+    # If logging setup fails, don't break server startup; continue with console logging
+    logger.exception(
+        "Failed to set up rotating file logging for mcp_server.log")
+
 # 创建服务器实例
 server = Server(config.server.name)
+
+# Thread control: event to signal server started and refs for the thread/loop
+server_started_event = threading.Event()
+server_loop_ref: dict[str, any] = {}
+server_thread: threading.Thread | None = None
 
 
 @server.list_tools()
@@ -209,11 +268,20 @@ async def main():
 
         # 使用MCP SDK的stdio_server
         async with stdio_server() as (read_stream, write_stream):
+            # Signal that the server has (almost) started; we are about to run the server loop
+            try:
+                server_started_event.set()
+            except Exception:
+                pass
             await server.run(
                 read_stream,
                 write_stream,
                 server.create_initialization_options()
             )
+
+    # 当进入 stdio_server 上下文后，标记为已启动
+    # We can't set the server_started_event before entering the context here since that
+    # would happen inside the coroutine; instead we set it right before awaiting server.run
 
     except Exception as e:
         logger.error(f"Failed to start server: {e}")
@@ -222,12 +290,81 @@ async def main():
         raise
 
 
-if __name__ == "__main__":
-    import asyncio
+def run_server_in_thread(wait_started: bool = True) -> threading.Thread:
+    """Start the MCP server in a separate daemon thread to avoid blocking.
+
+    The thread runs its own asyncio event loop and will execute `main()` in that
+    event loop. If wait_started is True, this function will block until the
+    server sets `server_started_event` or timed-out.
+    """
+    global server_thread
+
+    def _target():
+        loop = asyncio.new_event_loop()
+        server_loop_ref['loop'] = loop
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(main())
+        except Exception as e:
+            logger.exception(f"Server thread exception: {e}")
+        finally:
+            # Clean up
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
+            server_loop_ref.pop('loop', None)
+
+    server_thread = threading.Thread(target=_target, daemon=True)
+    server_thread.start()
+    if wait_started:
+        server_started_event.wait(timeout=10)
+    return server_thread
+
+
+def stop_server_in_thread(timeout: float = 5.0):
+    """Try to stop the server by stopping the thread's event loop and joining the thread."""
+    global server_thread
     try:
-        asyncio.run(main())
+        loop = server_loop_ref.get('loop')
+        if loop is not None:
+            # This should cause loop.run_until_complete to exit
+            loop.call_soon_threadsafe(loop.stop)
+    except Exception:
+        pass
+    if server_thread is not None:
+        server_thread.join(timeout)
+        if server_thread.is_alive():
+            logger.warning(
+                "Server thread did not exit within timeout; process may still need to be killed.")
+
+
+if __name__ == "__main__":
+    # Run server in separate thread to avoid blocking main thread and make it
+    # easier to terminate in interactive environments.
+    def _signal_handler(sig, frame):
+        logger.info(f"Signal {sig} received, stopping server...")
+        stop_server_in_thread()
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+    try:
+        run_server_in_thread(wait_started=True)
+        logger.info(
+            "Server started in background thread. Press Ctrl+C to stop.")
+        # Keep the main thread alive while server thread is running
+        while True:
+            if server_thread and not server_thread.is_alive():
+                break
+            time.sleep(1)
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
+        stop_server_in_thread()
     except Exception as e:
         logger.error(f"Server error: {e}")
         sys.exit(1)

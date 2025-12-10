@@ -123,9 +123,9 @@ async def main():
         print("\n✅ 所有测试通过! MCP服务器组件工作正常")
 
         print("\n📝 要启动MCP服务器，请运行:")
-        print("  poetry run python mcp_server/server/mcp_server.py")
+        print("  poetry run python -m mcp_server.server.mcp_server")
         print("\n📝 要测试MCP通信，请运行:")
-        print("  poetry run python test/test_mcp_simple.py")
+        print("  poetry run python -m test.test_mcp_simple")
 
         return 0
     else:

@@ -194,10 +194,26 @@ curl -X POST "http://localhost:8000/api/v1/vectorize" \
 
 - URL: `/dashboard/mcp` (前端)
 - 后端 API 路径: `/api/v1/mcp`
+
   - GET `/status` - 检查 MCP 是否正在运行
   - POST `/start` - 启动 MCP 服务
   - POST `/stop` - 停止 MCP 服务
   - GET `/logs` - 获取当前日志
+
+  ## 运行 MCP Server
+
+  注意：MCP Server 是一个单独的 Python 包（`mcp_server`），推荐使用模块方式运行以保证包导入正确：
+
+  ```bash
+  # 进入项目根目录
+  cd /path/to/rag_mcp
+
+  # 以模块方式启动 MCP Server
+  python -m mcp_server.server.mcp_server
+  ```
+
+  如果你需要以脚本方式直接运行（不推荐），确保 `sys.path` 已包含项目根目录或先执行上面的 `cd` 命令。
+
   - GET `/logs/stream` - 错误流式日志 (SSE)
 
 启动 MCP 的示例命令 (后端):
@@ -205,3 +221,33 @@ curl -X POST "http://localhost:8000/api/v1/vectorize" \
 ```bash
 curl -X POST http://localhost:8000/api/v1/mcp/start
 ```
+
+### 在管理页面启动/停止 (线程模式)
+
+现在项目支持通过 MCP 管理页面（`/dashboard/mcp`）在同一后端进程中以**后台线程**方式启动和管理 MCP Server：
+
+- 当你点击“启动”时，后端会尝试以“线程模式” (`run_server_in_thread`) 启动 MCP Server（线程在当前 FastAPI 进程中运行）。
+- 如果线程模式由于缺少运行时依赖（例如 `asyncpg`）或其他导入错误不可用，后端会返回错误；在这种情况下会回退到在子进程中启动（旧行为）。
+- 停止时，后端会优先尝试结束线程模式（如果是线程运行），否则会终止子进程。
+
+注意事项：
+
+- 线程模式需要项目运行环境中安装好 MCP Server 及其依赖（从 `pyproject.toml` 安装）。如果你尚未安装依赖，请在项目根运行：
+
+```bash
+# 使用 Poetry（推荐）
+poetry install
+poetry run python -m mcp_server.server.mcp_server  # 可用于单独测试
+
+# 或使用 venv + pip（示例只演示必要运行时依赖）
+python -m venv .venv
+source .venv/bin/activate
+pip install asyncpg mcp pgvector minio python-dotenv
+```
+
+- 如果你通过管理页面启动遇到错误，前端会显示后端返回的错误信息（例如缺少某个库）。安装缺失依赖后重新尝试即可。
+
+使用管理页面的好处：
+
+- 无需额外进程管理，测试和开发时更方便。
+- 启动/停止响应更快，日志仍写入 `mcp_server/mcp_server.log`，并可在页面中实时查看（SSE 或轮询回退）。

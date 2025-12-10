@@ -21,7 +21,8 @@ async def test_mcp_communication():
 
     # 启动MCP服务器
     server_path = project_root
-    server_cmd = ["poetry", "run", "python", "mcp_server/server/mcp_server.py"]
+    server_cmd = ["poetry", "run", "python",
+                  "-m", "mcp_server.server.mcp_server"]
 
     try:
         # 启动服务器进程
@@ -115,8 +116,8 @@ async def test_simple_server():
     print("=" * 40)
 
     server_path = project_root
-    server_cmd = ["poetry", "run", "python",
-                  "mcp_server/server/simple_mcp_server.py"]
+    server_cmd = ["poetry", "run", "python", "-m",
+                  "mcp_server.server.simple_mcp_server"]
 
     try:
         print("🚀 启动简单MCP服务器...")

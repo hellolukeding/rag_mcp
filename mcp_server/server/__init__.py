@@ -1,11 +1,10 @@
-# Server module for MCP implementations
+"""Server package for MCP implementations.
 
-from .simple_mcp_server import MCPServer
+This package exposes the `mcp_server` entry module. Previously it attempted
+to import a non-existent `simple_mcp_server` which caused import-time
+errors when the package was imported. Keep imports minimal and explicit.
+"""
 
-__all__ = [
-    'MCPServer'
-]
+from . import mcp_server
 
-from .simple_mcp_server import MCPServer
-
-__all__ = ['MCPServer']
+__all__ = ["mcp_server"]

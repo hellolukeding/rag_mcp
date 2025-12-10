@@ -2,10 +2,12 @@ import asyncio
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict
 
+import aiofiles
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -61,7 +63,7 @@ async def get_mcp_status():
 
 @router.post("/mcp/start")
 async def start_mcp_server():
-    # Check if already running
+    # Check if already running via PID file
     pid = read_pid()
     if pid and is_running(pid):
         return {"message": "MCP server already running", "pid": pid}
@@ -69,13 +71,13 @@ async def start_mcp_server():
     # Ensure log dir
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    # Start subprocess and write pid
+    # Start as subprocess using module mode to ensure package imports work
     try:
-        # Spawn background shell to run server script
-        cmd = ["python3", SERVER_SCRIPT]
+        cmd = [sys.executable, "-m", "mcp_server.server.mcp_server"]
         with open(LOG_FILE, "ab") as lf:
             process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE,
                 stdout=lf,
                 stderr=subprocess.STDOUT,
                 cwd=Path.cwd(),
@@ -95,28 +97,31 @@ async def start_mcp_server():
 @router.post("/mcp/stop")
 async def stop_mcp_server():
     pid = read_pid()
-    if not pid or not is_running(pid):
-        return {"message": "MCP server not running"}
+    if not pid:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="MCP server not running")
 
     try:
         os.kill(pid, signal.SIGTERM)
-        # wait for process to terminate
-        time_waited = 0
-        while is_running(pid) and time_waited < 5:
-            time.sleep(0.5)
-            time_waited += 0.5
-        if is_running(pid):
-            os.kill(pid, signal.SIGKILL)
-
-        # remove pid file
+        # wait for process to exit
+        for _ in range(20):
+            if not is_running(pid):
+                break
+            time.sleep(0.2)
         try:
-            PID_FILE.unlink()
+            PID_FILE.unlink(missing_ok=True)
         except Exception:
             pass
-        logger.info(f"Stopped MCP server (pid={pid})")
         return {"message": "MCP server stopped", "pid": pid}
+    except ProcessLookupError:
+        try:
+            PID_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="MCP server not running")
     except Exception as e:
-        logger.error(f"Failed to stop MCP server: {e}")
+        logger.error(f"Error stopping MCP server (pid={pid}): {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -141,12 +146,32 @@ def tail_file(path: Path, interval: float = 0.5):
 
 @router.get("/mcp/logs/stream")
 async def stream_mcp_logs():
-    # Server-Sent Events stream
+    # Server-Sent Events stream — async file tail using aiofiles so we don't
+    # block the FastAPI event loop. This yields SSE `data:` frames for each
+    # new line appended to the log file.
     async def event_generator():
-        loop = asyncio.get_event_loop()
-        # run blocking generator in thread
-        for chunk in tail_file(LOG_FILE):
-            yield chunk
+        try:
+            # Wait until log file exists
+            while not LOG_FILE.exists():
+                await asyncio.sleep(0.2)
+
+            async with aiofiles.open(LOG_FILE, mode="r", encoding="utf-8", errors="ignore") as afp:
+                # Move to EOF
+                await afp.seek(0, os.SEEK_END)
+                while True:
+                    line = await afp.readline()
+                    if not line:
+                        # No new data — yield nothing but sleep to avoid busy loop
+                        await asyncio.sleep(0.2)
+                        continue
+                    # Yield a valid SSE data frame
+                    yield f"data: {line.strip()}\n\n"
+        except asyncio.CancelledError:
+            # Client disconnected — stop the generator
+            return
+        except Exception as e:
+            # Surface error to client as SSE message and then stop
+            yield f"data: ERROR: {str(e)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

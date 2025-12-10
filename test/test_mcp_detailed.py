@@ -23,7 +23,7 @@ async def detailed_mcp_test():
     # 启动服务器
     server_path = project_root
     process = await asyncio.create_subprocess_exec(
-        "poetry", "run", "python", "mcp_server/server/mcp_server.py",
+        "poetry", "run", "python", "-m", "mcp_server.server.mcp_server",
         cwd=server_path,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
