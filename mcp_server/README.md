@@ -53,12 +53,20 @@ MAX_SEARCH_RESULTS=50
 
 ### 1. 启动服务器
 
-```bash
-# 使用启动脚本 (推荐)
-PYTHONPATH=. poetry run python mcp/scripts/start_server.py
+支持两种启动方式：stdio 模式（用于直接以 stdio 协议通信）和 Streamable HTTP 模式（推荐，便于 LLM 客户端通过 HTTP 连接）。
 
-# 或直接运行服务器
-PYTHONPATH=. poetry run python mcp/server/simple_mcp_server.py
+stdio 模式 (默认)：
+
+```bash
+# 使用启动脚本 (stdio 模式)
+PYTHONPATH=. poetry run python mcp/scripts/start_server.py --transport stdio
+```
+
+Streamable HTTP 模式 (推荐)：
+
+```bash
+# 使用 HTTP 模式启动 MCP 服务，默认监听 127.0.0.1:18080
+PYTHONPATH=. poetry run python mcp/server/mcp_server.py --transport http --http-host 127.0.0.1 --http-port 18080
 ```
 
 ### 2. 测试服务器
@@ -187,7 +195,7 @@ PYTHONPATH=. poetry run python mcp/scripts/demo.py
 
 ### Python 客户端示例
 
-```python
+````python
 import asyncio
 import json
 from mcp.simple_mcp_server import MCPServer
@@ -219,7 +227,46 @@ results = asyncio.run(search_documents("心理咨询"))
 for result in results:
     print(f"相似度: {result['similarity_score']:.2f}")
     print(f"内容: {result['content'][:100]}...")
-```
+
+### 使用 Streamable HTTP 的 Python 客户端示例
+下面示例使用 `mcp.client.streamable_http.streamablehttp_client` 来与处于 Streamable HTTP 模式的 MCP 服务器通信：
+
+```python
+import asyncio
+import json
+from mcp.client.streamable_http import streamablehttp_client
+
+async def call_rag_search(query: str):
+  url = "http://127.0.0.1:18080/jsonrpc"
+  async with streamablehttp_client(url) as (read_stream, write_stream, get_session_id):
+    # Create JSON-RPC request message (session transport will handle sending)
+    request = {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "tools/call",
+      "params": {
+        "name": "rag_search",
+        "arguments": {"query": query, "limit": 5, "threshold": 0.7}
+      }
+    }
+
+    # Send request via the write stream
+    await write_stream.send(request)
+
+    # Wait for responses from read_stream
+    while True:
+      msg = await read_stream.receive()
+      if isinstance(msg, Exception):
+        raise msg
+      # msg is a SessionMessage object. You can inspect msg.message to find results
+      print("Received message:", msg.message)
+      # (This example may need adjustment depending on your client-side message handling.)
+
+# Usage:
+asyncio.run(call_rag_search("心理咨询"))
+````
+
+````
 
 ### MCP 客户端集成
 
@@ -228,7 +275,7 @@ for result in results:
 ```bash
 # 启动服务器 (stdio模式)
 python mcp/simple_mcp_server.py
-```
+````
 
 ## 文件结构
 

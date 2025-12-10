@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import aiofiles
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -62,8 +62,14 @@ async def get_mcp_status():
     return McpStatusResponse(running=True, pid=pid, uptime_seconds=uptime)
 
 
+class StartMcpRequest(BaseModel):
+    transport: Optional[str] = None
+    http_host: Optional[str] = None
+    http_port: Optional[int] = None
+
+
 @router.post("/mcp/start")
-async def start_mcp_server():
+async def start_mcp_server(req: StartMcpRequest = Body(default_factory=StartMcpRequest)):
     # Check if already running via PID file
     pid = read_pid()
     if pid and is_running(pid):
@@ -74,7 +80,23 @@ async def start_mcp_server():
 
     # Start as subprocess using module mode to ensure package imports work
     try:
-        cmd = [sys.executable, "-m", "mcp_server.server.mcp_server"]
+        transport = req.transport or os.environ.get("MCP_TRANSPORT", "http")
+        http_host = req.http_host or os.environ.get(
+            "MCP_HTTP_HOST", "127.0.0.1")
+        http_port = str(req.http_port or os.environ.get(
+            "MCP_HTTP_PORT", "18080"))
+        # Default to HTTP transport so the MCP server exposes a Streamable HTTP endpoint
+        cmd = [
+            sys.executable,
+            "-m",
+            "mcp_server.server.mcp_server",
+            "--transport",
+            transport,
+            "--http-host",
+            http_host,
+            "--http-port",
+            http_port,
+        ]
         with open(LOG_FILE, "ab") as lf:
             process = subprocess.Popen(
                 cmd,

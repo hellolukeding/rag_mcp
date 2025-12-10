@@ -276,7 +276,7 @@ export default function McpManagementPage() {
     return (
         <div className="p-4">
             <Title level={2} className="mb-6 text-gray-800">MCP 管理</Title>
-            
+
             {error && (
                 <Alert
                     message="错误"
@@ -323,28 +323,28 @@ export default function McpManagementPage() {
 
                             <div className="flex space-x-2 mt-4">
                                 <Tooltip title="刷新状态">
-                                    <Button 
-                                        icon={<SolarRefreshOutline />} 
-                                        loading={refreshing} 
+                                    <Button
+                                        icon={<SolarRefreshOutline />}
+                                        loading={refreshing}
                                         onClick={onRefreshStatus}
                                     />
                                 </Tooltip>
-                                
+
                                 {!status.running ? (
-                                    <Button 
-                                        type="primary" 
-                                        icon={<PoweroffOutlined />} 
-                                        loading={loadingStart} 
+                                    <Button
+                                        type="primary"
+                                        icon={<PoweroffOutlined />}
+                                        loading={loadingStart}
                                         onClick={onStart}
                                         className="flex-grow"
                                     >
                                         启动服务
                                     </Button>
                                 ) : (
-                                    <Button 
-                                        danger 
-                                        icon={<StopOutlined />} 
-                                        loading={loadingStop} 
+                                    <Button
+                                        danger
+                                        icon={<StopOutlined />}
+                                        loading={loadingStop}
                                         onClick={onStop}
                                         className="flex-grow"
                                     >
@@ -364,35 +364,46 @@ export default function McpManagementPage() {
                                 <Text type="secondary">
                                     当 MCP 服务已启动时，LLM 客户端可以直接通过 MCP 协议调用已注册的工具。
                                 </Text>
-                                
-                                <Divider orientation="start" plain>连接步骤</Divider>
+
+                                <Divider plain>连接步骤</Divider>
                                 <ol className="list-decimal list-inside space-y-2 mb-4">
                                     <li>确保后端 MCP 已启动（状态显示为运行中）</li>
                                     <li>在你的应用中配置 MCP 客户端连接参数</li>
                                     <li>使用支持 MCP 协议的 LLM 客户端库进行连接</li>
                                 </ol>
 
-                                <Divider orientation="start" plain>JSON 配置示例 (SSE方式)</Divider>
+                                <Divider plain>JSON 配置示例 (SSE / Streamable HTTP)</Divider>
                                 <div className="bg-gray-900 text-white rounded-md p-3 text-xs overflow-auto">
-                                    <pre className="whitespace-pre-wrap"><code>{`{
-  "servers": {
-    "rag-mcp": {
-      "type": "sse",
-      "url": "http://localhost:8000/api/v1/mcp/sse"
-    }
-  },
-  "inputs": []
+                                    <pre className="whitespace-pre-wrap"><code>{`// SSE 示例
+{
+    "servers": {
+        "rag-mcp": {
+            "type": "sse",
+            "url": "http://localhost:8000/api/v1/mcp/sse"
+        }
+    },
+    "inputs": []
+}
+
+// Streamable HTTP 示例 (推荐)
+{
+    "servers": {
+        "rag-mcp": {
+            "type": "streamable_http",
+            "url": "http://127.0.0.1:18080/jsonrpc"
+        }
+    },
+    "inputs": []
 }`}</code></pre>
                                 </div>
                                 <div className="mt-3 text-xs text-gray-500">
-                                    说明: 此配置适用于通过SSE方式连接到RAG-MCP服务器。你需要将此配置集成到你的MCP客户端应用中。
-                                    注意：SSE连接需要先通过API启动MCP服务器（点击上方"启动服务"按钮）。
+                                    说明: 上面给出了使用 SSE (日志/事件) 和 Streamable HTTP（JSON-RPC over HTTP）两种连接方式的配置示例。Streamable HTTP 是更通用、推荐的方式，适用于 MCP 协议客户端。请根据你的客户端选择适当的配置。
                                 </div>
                             </div>
-                            
+
                             <div className="mt-4 text-xs text-gray-500">
-                                说明: 上例使用仓库内的 mcp.simple_mcp_server.MCPServer 封装来方便本地调用；
-                                在生产中，你的 LLM 客户端可以通过相同的 MCP 协议构造 JSON-RPC 请求并与 MCP 服务器通信（stdio 或 socket，视服务器启动方式而定）。
+                                说明: 上例使用仓库内的 `mcp.simple_mcp_server.MCPServer` 封装来方便本地调用；
+                                在生产中，你的 LLM 客户端可以通过相同的 MCP 协议构造 JSON-RPC 请求并与 MCP 服务器通信（stdio、socket 或 Streamable HTTP，视服务器启动方式而定）。
                             </div>
                         </div>
                     </Card>
@@ -400,8 +411,8 @@ export default function McpManagementPage() {
 
                 {/* 日志面板 */}
                 <Col span={24}>
-                    <Card 
-                        title="MCP 日志" 
+                    <Card
+                        title="MCP 日志"
                         extra={
                             <Space>
                                 <Tag color={logsConnected ? 'green' : logsConnecting ? 'gold' : isPolling ? 'blue' : 'red'}>

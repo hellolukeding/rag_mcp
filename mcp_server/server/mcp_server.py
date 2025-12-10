@@ -3,20 +3,22 @@ MCP Server implementation for RAG system using MCP SDK
 Provides document retrieval capabilities via MCP protocol
 """
 
-from mcp.types import TextContent, Tool
-from mcp.server.stdio import stdio_server
-from mcp.server.models import InitializationOptions
-from mcp.server import Server
-from dotenv import load_dotenv
-from typing import Any, Dict, List, Optional
-import time
-import threading
-import signal
-import logging
-import json
+import argparse
 import asyncio
+import json
+import logging
 import os
+import signal
 import sys
+import threading
+import time
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+from mcp.server import Server
+from mcp.server.models import InitializationOptions
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
 
 # Re-exec when executed as a script so module imports work consistently.
 if __name__ == "__main__" and (__package__ is None or __package__ == ""):
@@ -266,7 +268,7 @@ async def main():
         logger.info(
             f"Starting MCP RAG Server: {config.server.name} v{config.server.version}")
 
-        # 使用MCP SDK的stdio_server
+        # 使用MCP SDK的stdio_server (默认)
         async with stdio_server() as (read_stream, write_stream):
             # Signal that the server has (almost) started; we are about to run the server loop
             try:
@@ -326,6 +328,58 @@ def run_server_in_thread(wait_started: bool = True) -> threading.Thread:
     return server_thread
 
 
+async def main_http(host: str = "127.0.0.1", port: int = 18080, json_response: bool = False, stateless: bool = False):
+    """Run the MCP server over Streamable HTTP (ASGI app handled by uvicorn).
+
+    This leverages the `StreamableHTTPSessionManager` provided by the `mcp` SDK to
+    host the MCP server over HTTP. It implements session management and optional
+    event store resumability.
+    """
+    # Import here to avoid requiring these dependencies in stdio mode
+    try:
+        import uvicorn
+        from mcp.server.streamable_http_manager import \
+            StreamableHTTPSessionManager
+        from starlette.applications import Starlette
+        from starlette.responses import Response
+        from starlette.routing import Mount
+    except Exception as e:
+        logger.error(
+            "Required packages for Streamable HTTP not installed: %s", e)
+        raise
+
+    # Create a session manager for the current server instance
+    session_manager = StreamableHTTPSessionManager(
+        app=server,
+        event_store=None,
+        json_response=json_response,
+        stateless=stateless,
+    )
+
+    # ASGI wrapper for the session manager
+    class _SessionASGI:
+        def __init__(self, manager):
+            self._manager = manager
+
+        async def __call__(self, scope, receive, send):
+            await self._manager.handle_request(scope, receive, send)
+
+    # Lifespan function to run the session manager
+    async def lifespan(app):
+        async with session_manager.run():
+            yield
+
+    app = Starlette(
+        routes=[Mount("/jsonrpc", _SessionASGI(session_manager))], lifespan=lifespan)
+
+    # Run uvicorn server
+    config_uvicorn = uvicorn.Config(
+        app=app, host=host, port=port, log_level="info")
+    server_uvicorn = uvicorn.Server(config_uvicorn)
+    logger.info(f"Starting Streamable HTTP MCP server on {host}:{port}")
+    await server_uvicorn.serve()
+
+
 def stop_server_in_thread(timeout: float = 5.0):
     """Try to stop the server by stopping the thread's event loop and joining the thread."""
     global server_thread
@@ -353,15 +407,32 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    # Add CLI flags to choose transport (stdio or http) and http options
+    parser = argparse.ArgumentParser(prog="mcp_server")
+    parser.add_argument("--transport", choices=["stdio", "http"], default=os.environ.get(
+        "MCP_TRANSPORT", "stdio"), help="Which transport mode to run the MCP server in.")
+    parser.add_argument("--http-host", default=os.environ.get("MCP_HTTP_HOST",
+                        "127.0.0.1"), help="Host for Streamable HTTP transport")
+    parser.add_argument("--http-port", type=int, default=int(os.environ.get(
+        "MCP_HTTP_PORT", "18080")), help="Port for Streamable HTTP transport")
+    args = parser.parse_args()
+
     try:
-        run_server_in_thread(wait_started=True)
-        logger.info(
-            "Server started in background thread. Press Ctrl+C to stop.")
-        # Keep the main thread alive while server thread is running
-        while True:
-            if server_thread and not server_thread.is_alive():
-                break
-            time.sleep(1)
+        if args.transport == "stdio":
+            run_server_in_thread(wait_started=True)
+            logger.info(
+                "Server started in background thread (stdio). Press Ctrl+C to stop.")
+
+            # Keep the main thread alive while server thread is running
+            while True:
+                if server_thread and not server_thread.is_alive():
+                    break
+                time.sleep(1)
+        else:
+            # Run the HTTP server in the main thread
+            import asyncio as _asyncio
+
+            _asyncio.run(main_http(host=args.http_host, port=args.http_port))
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
         stop_server_in_thread()
