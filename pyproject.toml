@@ -3,6 +3,7 @@ name = "rag-mcp"
 version = "0.1.0"
 description = "RAG-MCP"
 authors = ["lukeding <dingkai9627@outlook.com>"]
+license = "MIT"
 readme = "README.md"
 package-mode = false
 
