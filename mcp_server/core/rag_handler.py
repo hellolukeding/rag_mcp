@@ -132,7 +132,7 @@ class RAGHandler:
                     "file_type": doc['file_type'],
                     "file_size": doc['file_size'],
                     "chunk_count": len(chunks),
-                    "created_at": doc['created_at']
+                    "created_at": doc['created_at'].isoformat() if isinstance(doc.get('created_at'), datetime) else (str(doc.get('created_at')) if doc.get('created_at') is not None else None)
                 }
                 document_list.append(document_info)
 
@@ -193,7 +193,7 @@ class RAGHandler:
                     "file_type": document['file_type'],
                     "content": document.get('content', ''),
                     "metadata": metadata,
-                    "created_at": document['created_at'],
+                    "created_at": document['created_at'].isoformat() if isinstance(document.get('created_at'), datetime) else (str(document.get('created_at')) if document.get('created_at') is not None else None),
                     "file_size": document['file_size'],
                     "chunks": chunk_list
                 }

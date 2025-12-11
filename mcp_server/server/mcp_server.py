@@ -12,6 +12,7 @@ import signal
 import sys
 import threading
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -194,7 +195,16 @@ async def handle_call_tool(name: str, arguments: dict) -> List[TextContent]:
             raise ValueError(f"Unknown tool: {name}")
 
         logger.info(f"Tool {name} completed successfully")
-        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        def _json_default(o):
+            if isinstance(o, datetime):
+                return o.isoformat()
+            try:
+                return str(o)
+            except Exception:
+                return None
+
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=_json_default))]
 
     except Exception as e:
         logger.error(f"Error handling tool {name}: {e}")
@@ -204,7 +214,7 @@ async def handle_call_tool(name: str, arguments: dict) -> List[TextContent]:
             "arguments": arguments,
             "success": False
         }
-        return [TextContent(type="text", text=json.dumps(error_result, ensure_ascii=False, indent=2))]
+        return [TextContent(type="text", text=json.dumps(error_result, ensure_ascii=False, indent=2, default=_json_default))]
 
 
 async def handle_rag_search(arguments: dict) -> dict:
