@@ -1,5 +1,7 @@
 # RAG MCP 项目
 
+English: [README_en.md](README_en.md)
+
 ## 概述
 
 RAG MCP（Model Context Protocol）项目是一个综合系统，旨在通过模块化和可扩展的架构来管理和与大型语言模型（LLMs）交互。它提供了向量化、存储和数据检索的工具，以及与客户端应用程序无缝集成的 API。
@@ -169,6 +171,10 @@ pytest
 ## 许可证
 
 此项目基于 MIT 许可证授权。详情请参阅 LICENSE 文件。
+
+---
+
+English version: [README_en.md](README_en.md)
 
 ## 鸣谢
 

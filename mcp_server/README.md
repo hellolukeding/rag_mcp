@@ -1,5 +1,7 @@
 # RAG MCP 服务器使用指南
 
+English: [README_en.md](README_en.md)
+
 ## 概述
 
 这是一个基于 MCP (Model Context Protocol) 的 RAG (Retrieval Augmented Generation) 服务器，专门用于文档检索功能。该服务器不包含对话生成功能，仅提供高效的文档内容检索服务，可以被其他 AI 模型使用。
@@ -67,6 +69,44 @@ Streamable HTTP 模式 (推荐)：
 ```bash
 # 使用 HTTP 模式启动 MCP 服务，默认监听 127.0.0.1:18080
 PYTHONPATH=. poetry run python mcp/server/mcp_server.py --transport http --http-host 127.0.0.1 --http-port 18080
+```
+
+### Streamable HTTP / JSON-RPC 地址
+
+当 MCP Server 在 HTTP 模式运行时，默认可以通过以下地址发送 JSON-RPC 请求：
+
+- `http://127.0.0.1:18080/jsonrpc`
+
+示例：发送 `rag_search` 的 JSON-RPC 请求：
+
+```bash
+curl -s -X POST "http://127.0.0.1:18080/jsonrpc" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rag_search","arguments":{"query":"mental health","limit":5}}}'
+```
+
+### 开发者补充说明
+
+以下是 MCP Server 的开发和调试建议：
+
+- 在 HTTP 模式下可使用 curl、Postman 或任何 JSON-RPC 客户端进行测试。
+- 使用 `--transport stdio` 启动更适合与容器内或嵌套应用直接通信。
+- 可在 `.env` 中设置 `MCP_HTTP_HOST` 和 `MCP_HTTP_PORT` 来更改默认监听地址。
+
+### 架构图（Mermaid）
+
+```mermaid
+flowchart LR
+  subgraph App
+    A[LLM / Client] -->|JSON-RPC / tools/call| M[MCP Server]
+  end
+  subgraph Store
+    M -->|SQL queries| D[(Postgres / pgvector)]
+  end
+  subgraph Other
+    M -->|Calls| B[FastAPI API]
+  end
+
 ```
 
 ### 2. 测试服务器
@@ -364,6 +404,10 @@ python mcp/simple_mcp_server.py
 ## 许可证
 
 [MIT License](LICENSE)
+
+---
+
+English version: [README_en.md](README_en.md)
 
 ## 贡献
 
